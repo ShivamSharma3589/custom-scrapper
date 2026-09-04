@@ -92,6 +92,33 @@ def run() -> int:
         check("every product passes validation", not refused,
               refused[0].reason if refused else "")
 
+    print("\n=== a brand run still collects campaigns ===")
+    # Every other adapter picks up campaigns for free, because the listings it
+    # crawls are HTML and the promotional copy sits on them. AllBeauty's
+    # listings are products.json -- pure data, no copy anywhere -- so a brand
+    # run reported ZERO campaigns for a site running ten. The offer hubs have
+    # to be seeded explicitly.
+    hubs = set(adapter.campaign_discovery_urls())
+    seeds = set(adapter.campaign_seed_urls(["Clinique"]))
+    check("offer hubs are declared", len(hubs) >= 2, sorted(hubs))
+    check("a brand run seeds those hubs", seeds == hubs, sorted(seeds))
+
+    # And they must not collide with the JSON listing URLs, or the crawler
+    # would fetch one of them with the wrong callback.
+    listings = {p.url for p in adapter.product_listing_urls("Clinique", [], max_pages=2)}
+    check("hubs do not collide with listings", not (seeds & listings))
+
+    # A JSON listing carries no promotional copy and must claim none.
+    class JsonListing:
+        body = b'{"products": []}'
+        url = "https://allbeauty.com/collections/clinique/products.json"
+
+        def css(self, query):
+            return []
+
+    check("a JSON listing yields no campaigns",
+          adapter.extract_campaigns(JsonListing()) == [])
+
     print("\n=== the brand matcher handles this retailer's spellings ===")
     from retailscraper.validation import match_brand  # noqa: E402
 

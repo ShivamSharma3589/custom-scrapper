@@ -60,6 +60,14 @@ _PAGE_SIZE = 72
 #: "179 styles found" -- the total behind a search, used only for logging.
 _TOTAL_RE = re.compile(r"(\d[\d,]*)\s+styles found", re.IGNORECASE)
 
+#: The storefront's own declaration of which currency its prices are in:
+#:     "currency":{"currency":"GBP","symbol":"£",...,"isPrimary":true,...}
+#: ASOS geo-prices like Amazon does -- a product page fetched from outside the
+#: UK can come back quoting "$67.89" -- so the currency is READ, never
+#: assumed. Hardcoding GBP would label a foreign-currency price as sterling,
+#: which is worse than returning nothing.
+_CURRENCY_RE = re.compile(r'"currency"\s*:\s*\{[^}]*?"currency"\s*:\s*"([A-Z]{3})"')
+
 
 @register
 class AsosAdapter(RetailerAdapter):
@@ -77,6 +85,16 @@ class AsosAdapter(RetailerAdapter):
     # The search payload carries no category for a product ("productType" is
     # the literal string "Product"), so a category filter cannot be honoured.
     supports_categories = False
+
+    #: The only currency this adapter will publish. ASOS geo-prices, so a
+    #: storefront serving anything else is refused rather than relabelled.
+    EXPECTED_CURRENCY = "GBP"
+
+    def __init__(self) -> None:
+        # Counts pages refused for quoting a non-UK currency, so a run that
+        # returns nothing reports the real reason.
+        self.wrong_currency_pages = 0
+        self.currencies_seen: set = set()
 
     def configure_session(self, manager) -> None:
         """A browser for everything: plain HTTP hangs rather than failing."""
@@ -133,6 +151,16 @@ class AsosAdapter(RetailerAdapter):
         """
         raw_products = self._embedded_products(response)
         if not raw_products:
+            return []
+
+        # The storefront states its own currency. A page quoting anything but
+        # sterling is not UK pricing, and publishing it would corrupt every
+        # comparison -- so the whole page is refused rather than relabelled.
+        currency = self.page_currency(response)
+        if currency:
+            self.currencies_seen.add(currency)
+        if currency and currency != self.EXPECTED_CURRENCY:
+            self.wrong_currency_pages += 1
             return []
 
         targets = [brand] if brand else []
@@ -195,7 +223,7 @@ class AsosAdapter(RetailerAdapter):
                 if original is not None and original > 0
                 else None
             ),
-            currency="GBP",
+            currency=self.EXPECTED_CURRENCY,
             availability="InStock",
             # The search payload carries no category: `productType` is the
             # literal string "Product" for every result.
@@ -261,6 +289,14 @@ class AsosAdapter(RetailerAdapter):
         except (ValueError, TypeError):
             return []
         return [p for p in parsed if isinstance(p, dict)]
+
+    def page_currency(self, response) -> Optional[str]:
+        """The currency this storefront says its prices are in, or None."""
+        body = response.body
+        if isinstance(body, bytes):
+            body = body.decode("utf-8", "replace")
+        match = _CURRENCY_RE.search(body)
+        return match.group(1) if match else None
 
     def total_for_search(self, response) -> Optional[str]:
         """The "N styles found" figure, for logging and coverage checks."""

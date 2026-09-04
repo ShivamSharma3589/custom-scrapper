@@ -194,7 +194,14 @@ def suggest_brand(wanted: str, seen: Sequence[str]) -> Optional[str]:
     target = _fold_accents(wanted).casefold()
     best, best_score = None, 0.0
     for candidate in seen:
-        score = SequenceMatcher(None, target, _fold_accents(candidate).casefold()).ratio()
+        folded = _fold_accents(candidate).casefold()
+        # Never suggest the name that was already asked for. Doing so
+        # produced "'Jo Malone' found nothing, but John Lewis stocks
+        # 'Jo Malone'" -- advice that cannot be acted on, and which hides the
+        # real reason (the retailer files it under a different slug).
+        if folded == target:
+            continue
+        score = SequenceMatcher(None, target, folded).ratio()
         if score > best_score:
             best, best_score = candidate, score
     # 0.8 keeps "Bobbie Brown" -> "Bobbi Brown" (0.96) while rejecting

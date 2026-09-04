@@ -143,6 +143,11 @@ def run() -> int:
         # failure which returns Tommy Jeans records for a Tom Ford query.
         ("Tom Ford", None),
         ("Totally Made Up Brand", None),
+        # Never suggest the name that was already asked for. Doing so printed
+        # "'Jo Malone' found nothing, but John Lewis stocks 'Jo Malone'" --
+        # advice nobody can act on, which also hid the real cause.
+        ("Clinique", None),
+        ("Bobbi Brown", None),
     ]:
         got = suggest_brand(typed, seen)
         ok = got == want

@@ -101,6 +101,32 @@ def run() -> int:
           "\\'" in raw)
     check("parsing still returns a full page", len(products) == 72)
 
+    print("\n=== the currency is read, never assumed ===")
+    # ASOS geo-prices like Amazon: a product page fetched from outside the UK
+    # comes back quoting "$67.89". The adapter used to hardcode GBP, which
+    # would have labelled a foreign price as sterling and silently corrupted
+    # every cross-retailer comparison.
+    check("the page declares its currency",
+          adapter.page_currency(response) == "GBP", adapter.page_currency(response))
+    check("records carry that currency", all(p.currency == "GBP" for p in products))
+    check("nothing refused on a GBP page", adapter.wrong_currency_pages == 0)
+
+    class ForeignPage:
+        """The same payload, served by a non-GBP storefront."""
+
+        def __init__(self, original):
+            self.body = original.body.replace(b'"currency":"GBP"', b'"currency":"USD"')
+            self.url = original.url
+
+        def css(self, query):
+            return []
+
+    fresh = get_adapter("asos")
+    foreign = fresh.extract_products_from_listing(ForeignPage(response), "Clinique")
+    check("a non-GBP page yields NO records", foreign == [], len(foreign))
+    check("and is counted as refused",
+          fresh.wrong_currency_pages == 1, fresh.wrong_currency_pages)
+
     print("\n=== identifiers ===")
     check("product id and SKU are different spaces",
           all(p.sku_matches_product_id is False for p in products))

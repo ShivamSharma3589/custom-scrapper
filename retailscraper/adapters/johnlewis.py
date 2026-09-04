@@ -182,10 +182,25 @@ class JohnLewisAdapter(RetailerAdapter):
 
     # --- brand code resolution -------------------------------------------
 
-    @staticmethod
-    def _brand_slug(brand: str) -> str:
-        """Brand name -> the slug John Lewis uses ("Jo Malone" -> jo-malone)."""
-        return re.sub(r"[^a-z0-9]+", "-", brand.strip().lower()).strip("-")
+    #: Where John Lewis's own slug differs from the brand name we ask for.
+    #: Its page is /brand/jo-malone-london/, so slugifying "Jo Malone" gives
+    #: "jo-malone", which has no brand page and returns nothing. This cost 48
+    #: products the moment the brand aliases started normalising "Jo Malone
+    #: London" down to "Jo Malone".
+    BRAND_SLUG_OVERRIDES = {
+        "jo malone": "jo-malone-london",
+        "jo malone london": "jo-malone-london",
+        "mac": "mac",
+        "estee lauder": "estee-lauder",
+    }
+
+    @classmethod
+    def _brand_slug(cls, brand: str) -> str:
+        """Brand name -> the slug John Lewis uses in its brand-page URLs."""
+        key = brand.strip().lower()
+        if key in cls.BRAND_SLUG_OVERRIDES:
+            return cls.BRAND_SLUG_OVERRIDES[key]
+        return re.sub(r"[^a-z0-9]+", "-", key).strip("-")
 
     @property
     def _cache_path(self) -> Path:

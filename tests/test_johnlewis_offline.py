@@ -150,6 +150,22 @@ def run() -> int:
         failures += 0 if ok else 1
         print(f"  {'ok  ' if ok else 'FAIL'} {label:22} expected={(kind, first, second)} got={got}")
 
+    print("\n=== the retailer's own slug wins over the brand name ===")
+    # John Lewis files the brand at /brand/jo-malone-london/. Slugifying the
+    # canonical name "Jo Malone" gives "jo-malone", which has no brand page --
+    # so the moment brand aliases started normalising "Jo Malone London" down
+    # to "Jo Malone", this retailer silently went from 48 products to 0.
+    for brand, want in [
+        ("Jo Malone", "jo-malone-london"),
+        ("Jo Malone London", "jo-malone-london"),
+        ("Clinique", "clinique"),
+        ("Tom Ford", "tom-ford"),
+    ]:
+        got = adapter._brand_slug(brand)
+        ok = got == want
+        failures += 0 if ok else 1
+        print(f"  {'ok  ' if ok else 'FAIL'} {brand:20} -> {got}")
+
     print("\n=== URL parsing ===")
     checks = [
         ("plain product", "https://www.johnlewis.com/clinique-x/p47865", "47865"),

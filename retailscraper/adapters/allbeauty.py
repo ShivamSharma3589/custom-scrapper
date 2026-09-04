@@ -141,6 +141,20 @@ class AllBeautyAdapter(RetailerAdapter):
     def campaign_discovery_urls(self) -> List[str]:
         return [f"https://{self.domain}{path}" for path in self.CAMPAIGN_HUB_PATHS]
 
+    def campaign_seed_urls(self, brands: Sequence[str]) -> List[str]:
+        """The offer hubs, visited on a normal brand run too.
+
+        Every other adapter picks up campaigns for free, because the listings
+        it crawls are HTML and the promotional copy is on them. AllBeauty's
+        listings are `products.json` -- pure data, with no promotional copy
+        anywhere in it -- so without seeding these a brand run reports zero
+        campaigns for a site that is in fact running ten.
+
+        These are HTML pages and distinct from the JSON listing URLs, so
+        there is no risk of one URL being queued with two callbacks.
+        """
+        return self.campaign_discovery_urls()
+
     def scope_for_href(self, href: str):
         """AllBeauty's offer links are collection pages.
 
@@ -313,9 +327,14 @@ class AllBeautyAdapter(RetailerAdapter):
         if self._json(response) is not None:
             return []  # a JSON listing has no promotional copy
 
+        # AllBeauty states its offers as LINKS to collections ("At Least 30%
+        # off", "Extra 5% off ... Use Code: EXTRA5"), not as headings or
+        # banner text. Scanning only headings found nothing on a site running
+        # ten live campaigns, so the link scan runs first.
+        campaigns = self._scan_offer_links(response)
+        seen = {c.promotion_text for c in campaigns}
+
         url = str(response.url)
-        campaigns: List[Campaign] = []
-        seen: set = set()
         for node in response.css("h1, h2, [class*='banner'], [class*='promo']"):
             text = clean_text(node.get_all_text())
             if not text or text in seen or len(text) > 160:
