@@ -123,6 +123,85 @@ def check_discount_consistency(
     return None
 
 
+#: Corrections applied to the brand names a USER types, keyed on the folded,
+#: punctuation-stripped form. This normalises the question, never the
+#: retailer's answer -- correcting our own input is safe, while "correcting"
+#: what a retailer says a product is would be exactly the fuzzy matching that
+#: turns Tommy Jeans into Tom Ford.
+#:
+#: "Bobbie Brown" is here because the original brief was written that way.
+#: Every retailer spells it "Bobbi Brown", so the typo silently returned zero
+#: products at all six and read as "not stocked".
+BRAND_ALIASES = {
+    "bobbie brown": "Bobbi Brown",
+    "bobby brown": "Bobbi Brown",
+    "estee lauder company": "Estee Lauder",
+    "esteelauder": "Estee Lauder",
+    "mac cosmetics": "MAC",
+    "m a c": "MAC",
+    "jo malone london": "Jo Malone",
+    "too faced cosmetics": "Too Faced",
+    "tomford": "Tom Ford",
+}
+
+
+#: Brands this project tracks, in their correct spelling. Used only to
+#: suggest a correction when a requested brand returns nothing -- never to
+#: restrict what can be asked for. Suggesting from the brands a crawl
+#: happened to see is not enough: a retailer that returns nothing for a
+#: misspelled brand never reveals the right spelling, so "Clinque" would go
+#: uncorrected exactly when the help is needed.
+KNOWN_BRANDS = [
+    "Clinique",
+    "MAC",
+    "Tom Ford",
+    "Jo Malone",
+    "Estee Lauder",
+    "Bobbi Brown",
+    "Too Faced",
+    "La Mer",
+    "Aveda",
+    "Origins",
+    "Bumble and bumble",
+    "Le Labo",
+    "Aerin",
+    "Aramis",
+]
+
+
+def canonical_brand(name: str) -> str:
+    """Correct a brand name the user typed, if it is a known variant.
+
+    Returns the name unchanged when it is not a known alias, so an unknown
+    brand is still passed through and reported honestly rather than being
+    silently rewritten into something else.
+    """
+    key = re.sub(r"[^a-z0-9 ]+", " ", _fold_accents(name).casefold())
+    key = re.sub(r"\s+", " ", key).strip()
+    return BRAND_ALIASES.get(key, name)
+
+
+def suggest_brand(wanted: str, seen: Sequence[str]) -> Optional[str]:
+    """The brand from `seen` that `wanted` was most likely meant to be.
+
+    Used when a requested brand returns nothing: comparing it against the
+    brands the crawl actually encountered catches a typo without anyone
+    having to predict it in advance. Returns None unless the match is close
+    enough to be worth suggesting.
+    """
+    from difflib import SequenceMatcher
+
+    target = _fold_accents(wanted).casefold()
+    best, best_score = None, 0.0
+    for candidate in seen:
+        score = SequenceMatcher(None, target, _fold_accents(candidate).casefold()).ratio()
+        if score > best_score:
+            best, best_score = candidate, score
+    # 0.8 keeps "Bobbie Brown" -> "Bobbi Brown" (0.96) while rejecting
+    # "Tom Ford" -> "Tommy Jeans" (0.55).
+    return best if best_score >= 0.8 else None
+
+
 def _fold_accents(text: str) -> str:
     """Strip diacritics so "Estée" and "Estee" compare equal.
 

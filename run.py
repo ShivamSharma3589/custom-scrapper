@@ -31,6 +31,11 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from retailscraper.adapters.base import available_adapters, get_adapter  # noqa: E402
 from retailscraper.keywords import KeywordFileError, describe, load_keywords  # noqa: E402
+from retailscraper.validation import (  # noqa: E402
+    KNOWN_BRANDS,
+    canonical_brand,
+    suggest_brand,
+)
 from retailscraper.promotions import set_offer_keywords  # noqa: E402
 from retailscraper.output import build_payload, write_all, write_json  # noqa: E402
 from retailscraper.spider import RetailPromotionSpider  # noqa: E402
@@ -147,6 +152,18 @@ def main(argv=None) -> int:
         return 2
 
     adapter = get_adapter(args.retailer)
+
+    # Correct known misspellings in what the USER typed, before anything uses
+    # it. Every retailer spells the brand "Bobbi Brown"; the brief said
+    # "Bobbie Brown", which matched nothing anywhere and read as "not
+    # stocked". Only the question is normalised -- never the retailer's answer.
+    corrected = []
+    for raw_brand in args.brands:
+        fixed = canonical_brand(raw_brand)
+        if fixed != raw_brand:
+            print(f"note: reading {raw_brand!r} as {fixed!r}")
+        corrected.append(fixed)
+    args.brands = corrected
 
     # Refuse rather than return an empty file that looks like "no promotions".
     if args.campaigns_only and not adapter.campaign_discovery_urls():
@@ -276,6 +293,28 @@ def main(argv=None) -> int:
             print(f"  {brand:22} {count:>4} product(s){marker}")
         empty = [b for b, c in found.items() if not c]
         if empty:
+            # Every brand the crawl actually saw, including ones it rejected
+            # for being the wrong brand. Comparing an empty request against
+            # that catches a typo without anyone having to predict it: the
+            # brief's "Bobbie Brown" returned nothing at all six retailers
+            # and read as "not stocked".
+            seen_brands = {p.brand for p in spider.products.values() if p.brand}
+            seen_brands |= {
+                (r.payload or {}).get("brand")
+                for r in spider.rejected
+                if (r.payload or {}).get("brand")
+            }
+            # Check against the brands we track as well as those seen: a
+            # retailer that returns nothing for a misspelling never reveals
+            # the right spelling, which is precisely when help is needed.
+            candidates = sorted(seen_brands | set(KNOWN_BRANDS))
+            for brand in empty:
+                did_you_mean = suggest_brand(brand, candidates)
+                if did_you_mean:
+                    print(f"\n  DID YOU MEAN: {brand!r} found nothing, but "
+                          f"{adapter.display_name} stocks {did_you_mean!r}. "
+                          f"Re-run with that spelling.")
+
             print(f"\n  NOTE: {', '.join(empty)} returned no products at "
                   f"{adapter.display_name}. That may mean the retailer does not "
                   f"stock the brand, not that it has no promotions.")

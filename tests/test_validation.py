@@ -12,7 +12,13 @@ import sys
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from retailscraper.models import Product  # noqa: E402
-from retailscraper.validation import match_brand, validate  # noqa: E402
+from retailscraper.validation import (  # noqa: E402
+    KNOWN_BRANDS,
+    canonical_brand,
+    match_brand,
+    suggest_brand,
+    validate,
+)
 
 
 def make(**overrides):
@@ -106,6 +112,46 @@ def run() -> int:
         failures += 0 if ok else 1
         print(f"  {'ok  ' if ok else 'FAIL'} {verified:26} "
               f"expected={expected!r} got={actual!r}")
+
+    print("\n=== correcting the brand names a user types ===")
+    # The brief said "Bobbie Brown". Every retailer spells it "Bobbi Brown",
+    # so the typo returned zero products at all six and read as "not stocked".
+    # Only the QUESTION is normalised -- never the retailer's answer, which
+    # would be the fuzzy matching that turns Tommy Jeans into Tom Ford.
+    for typed, want in [
+        ("Bobbie Brown", "Bobbi Brown"),
+        ("bobby brown", "Bobbi Brown"),
+        ("MAC Cosmetics", "MAC"),
+        ("Jo Malone London", "Jo Malone"),
+        ("Bobbi Brown", "Bobbi Brown"),
+        ("Clinique", "Clinique"),
+        # An unknown brand passes through untouched rather than being
+        # silently rewritten into something else.
+        ("Some Brand We Do Not Know", "Some Brand We Do Not Know"),
+    ]:
+        got = canonical_brand(typed)
+        ok = got == want
+        failures += 0 if ok else 1
+        print(f"  {'ok  ' if ok else 'FAIL'} {typed:28} -> {got!r}")
+
+    print("\n=== suggesting a correction for an unrecognised brand ===")
+    seen = ["Clinique", "Estee Lauder", "Tommy Jeans", "Bobbi Brown"]
+    for typed, want in [
+        ("Clinque", "Clinique"),
+        ("Bobbie Brown", "Bobbi Brown"),
+        # Must NOT suggest across genuinely different brands: that is the
+        # failure which returns Tommy Jeans records for a Tom Ford query.
+        ("Tom Ford", None),
+        ("Totally Made Up Brand", None),
+    ]:
+        got = suggest_brand(typed, seen)
+        ok = got == want
+        failures += 0 if ok else 1
+        print(f"  {'ok  ' if ok else 'FAIL'} {typed:24} -> {got!r} (want {want!r})")
+
+    canonical_ok = all(canonical_brand(b) == b for b in KNOWN_BRANDS)
+    failures += 0 if canonical_ok else 1
+    print(f"  {'ok  ' if canonical_ok else 'FAIL'} every KNOWN_BRANDS entry is already canonical")
 
     print(f"\n{'ALL CHECKS PASSED' if failures == 0 else f'{failures} CHECK(S) FAILED'}")
     return 1 if failures else 0
