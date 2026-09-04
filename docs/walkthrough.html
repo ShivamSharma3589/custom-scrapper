@@ -1,0 +1,570 @@
+<title>Inside the Promotion Scraper</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500&family=IBM+Plex+Sans+Condensed:wght@500;600&family=Newsreader:opsz,wght@6..72,400;6..72,500&display=swap">
+
+<style>
+  :root {
+    --paper:      #FBFAF7;
+    --raised:     #F3F1EB;
+    --ink:        #1B1F2A;
+    --slate:      #5A6273;
+    --hair:       #DBD7CE;
+    --signal:     #9C5A16;
+    --signal-bg:  #F6EADA;
+    --verify:     #2F6B54;
+    --verify-bg:  #E4EFE9;
+    --reject:     #A33B32;
+    --reject-bg:  #F7E5E2;
+
+    --sans: "IBM Plex Sans Condensed", "Segoe UI", system-ui, sans-serif;
+    --serif: "Newsreader", Georgia, "Times New Roman", serif;
+    --mono: "IBM Plex Mono", "Cascadia Mono", Consolas, monospace;
+
+    --measure: 68ch;
+    --step: 1.5rem;
+  }
+
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) {
+      --paper:     #14171E;
+      --raised:    #1D212B;
+      --ink:       #E9E6E0;
+      --slate:     #98A0B0;
+      --hair:      #2E3441;
+      --signal:    #D9973F;
+      --signal-bg: #2E2418;
+      --verify:    #5FA484;
+      --verify-bg: #17281F;
+      --reject:    #D9776B;
+      --reject-bg: #2C1A18;
+    }
+  }
+
+  :root[data-theme="dark"] {
+    --paper:     #14171E;
+    --raised:    #1D212B;
+    --ink:       #E9E6E0;
+    --slate:     #98A0B0;
+    --hair:      #2E3441;
+    --signal:    #D9973F;
+    --signal-bg: #2E2418;
+    --verify:    #5FA484;
+    --verify-bg: #17281F;
+    --reject:    #D9776B;
+    --reject-bg: #2C1A18;
+  }
+
+  * { box-sizing: border-box; }
+
+  body {
+    background: var(--paper);
+    color: var(--ink);
+    font-family: var(--serif);
+    font-size: 17px;
+    line-height: 1.65;
+    margin: 0;
+    padding: 3.5rem 1.5rem 5rem;
+  }
+
+  .wrap { max-width: 860px; margin: 0 auto; display: flex; flex-direction: column; gap: var(--step); }
+  .prose { max-width: var(--measure); }
+
+  h1, h2, h3 { font-family: var(--sans); font-weight: 600; text-wrap: balance; margin: 0; line-height: 1.15; }
+  h1 { font-size: 2.6rem; letter-spacing: -0.015em; }
+  h2 { font-size: 1.5rem; margin-top: 1.4rem; }
+  h3 { font-size: 1.1rem; font-weight: 500; margin-top: 0.5rem; }
+  p { margin: 0; }
+
+  .eyebrow {
+    font-family: var(--mono); font-size: 0.7rem; letter-spacing: 0.13em;
+    text-transform: uppercase; color: var(--signal); margin: 0;
+  }
+  .lede { font-size: 1.18rem; color: var(--slate); max-width: var(--measure); }
+
+  code, .mono { font-family: var(--mono); font-size: 0.86em; }
+  code { background: var(--raised); padding: 0.1em 0.35em; border-radius: 3px; }
+
+  pre {
+    font-family: var(--mono); font-size: 0.82rem; line-height: 1.6;
+    background: var(--raised); color: var(--ink);
+    border: 1px solid var(--hair); border-radius: 6px;
+    padding: 0.9rem 1.1rem; margin: 0; overflow-x: auto;
+  }
+  pre code { background: none; padding: 0; }
+
+  hr { border: 0; border-top: 1px solid var(--hair); margin: 1.2rem 0 0; }
+
+  figure { margin: 0.6rem 0; display: flex; flex-direction: column; gap: 0.7rem; }
+  .figbox { overflow-x: auto; background: var(--raised); border: 1px solid var(--hair); border-radius: 8px; padding: 1.2rem; }
+  figure svg { display: block; max-width: 100%; height: auto; margin: 0 auto; }
+  figcaption { font-size: 0.92rem; color: var(--slate); max-width: var(--measure); }
+
+  .legend { display: flex; flex-wrap: wrap; gap: 1.1rem; font-family: var(--mono); font-size: 0.72rem; color: var(--slate); }
+  .legend span { display: inline-flex; align-items: center; gap: 0.4rem; }
+  .swatch { width: 11px; height: 11px; border-radius: 2px; border: 1px solid; flex: none; }
+
+  table { border-collapse: collapse; width: 100%; font-size: 0.9rem; }
+  .tablewrap { overflow-x: auto; }
+  th, td { text-align: left; padding: 0.55rem 0.8rem; border-bottom: 1px solid var(--hair); vertical-align: top; }
+  th { font-family: var(--sans); font-weight: 600; font-size: 0.78rem; letter-spacing: 0.04em; text-transform: uppercase; color: var(--slate); }
+  td.mono, th.mono { font-family: var(--mono); font-size: 0.8rem; white-space: nowrap; }
+
+  .tag { font-family: var(--mono); font-size: 0.68rem; padding: 0.12em 0.45em; border-radius: 3px; border: 1px solid; white-space: nowrap; }
+  .tag-generic { color: var(--verify); border-color: var(--verify); background: var(--verify-bg); }
+  .tag-adapter { color: var(--signal); border-color: var(--signal); background: var(--signal-bg); }
+
+  .stage { display: grid; grid-template-columns: 2.1rem 1fr; gap: 0 0.9rem; align-items: baseline; }
+  .stage + .stage { margin-top: 1.1rem; }
+  .stage .num { font-family: var(--mono); font-size: 0.78rem; color: var(--signal); padding-top: 0.25rem; }
+  .stage .body { display: flex; flex-direction: column; gap: 0.35rem; max-width: var(--measure); }
+  .stage .who { font-family: var(--mono); font-size: 0.74rem; color: var(--slate); }
+
+  .callout {
+    border-left: 3px solid var(--signal); border-radius: 0;
+    background: var(--signal-bg); padding: 0.85rem 1.1rem;
+    font-size: 0.95rem; max-width: var(--measure);
+  }
+  .callout strong { font-family: var(--sans); }
+</style>
+
+<div class="wrap">
+
+  <header class="prose" style="display:flex; flex-direction:column; gap:0.7rem;">
+    <p class="eyebrow">Code walkthrough</p>
+    <h1>Inside the promotion scraper</h1>
+    <p class="lede">How <code>run.py --retailer boots --brands Clinique</code> turns into verified rows of competitor pricing — every stage, and the file that owns it.</p>
+  </header>
+
+  <hr>
+
+  <section class="prose" style="display:flex; flex-direction:column; gap:0.8rem;">
+    <h2>The shape of it</h2>
+    <p>Roughly 8,100 lines across 24 modules. The split that matters: <strong>everything except <code>adapters/</code> is retailer-agnostic.</strong> The seven adapters know about HTML and APIs; nothing else does.</p>
+    <p>That's not tidiness for its own sake. When Lookfantastic changes its markup — and it did, mid-audit — only one file needs touching.</p>
+  </section>
+
+  <figure>
+    <div class="figbox">
+      <svg viewBox="0 0 760 726" role="img" aria-label="The eight stages of a scraper run, from parsing the command line through to writing JSON and CSV, showing which stages are generic framework code and which are retailer-specific adapter code.">
+        <defs>
+          <marker id="ar" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="5" markerHeight="5" orient="auto-start-reverse">
+            <path d="M1 1L9 5L1 9" fill="none" stroke="context-stroke" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/>
+          </marker>
+        </defs>
+
+        <g font-family="IBM Plex Sans Condensed, sans-serif">
+
+          <g>
+            <rect x="170" y="30" width="300" height="52" rx="5" fill="var(--verify-bg)" stroke="var(--verify)" stroke-width="1"/>
+            <text x="320" y="50" text-anchor="middle" font-size="13" font-weight="600" fill="var(--ink)">Read the command, pick the adapter</text>
+            <text x="320" y="68" text-anchor="middle" font-size="10.5" font-family="IBM Plex Mono, monospace" fill="var(--slate)">run.py → adapters/base.py</text>
+          </g>
+          <line x1="320" y1="88" x2="320" y2="108" stroke="var(--slate)" stroke-width="1.2" marker-end="url(#ar)"/>
+
+          <g>
+            <rect x="170" y="116" width="300" height="52" rx="5" fill="var(--signal-bg)" stroke="var(--signal)" stroke-width="1"/>
+            <text x="320" y="136" text-anchor="middle" font-size="13" font-weight="600" fill="var(--ink)">Open the right kind of session</text>
+            <text x="320" y="154" text-anchor="middle" font-size="10.5" font-family="IBM Plex Mono, monospace" fill="var(--slate)">configure_session() — HTTP or browser</text>
+          </g>
+          <line x1="320" y1="174" x2="320" y2="194" stroke="var(--slate)" stroke-width="1.2" marker-end="url(#ar)"/>
+
+          <g>
+            <rect x="170" y="202" width="300" height="52" rx="5" fill="var(--signal-bg)" stroke="var(--signal)" stroke-width="1"/>
+            <text x="320" y="222" text-anchor="middle" font-size="13" font-weight="600" fill="var(--ink)">Find candidate product URLs</text>
+            <text x="320" y="240" text-anchor="middle" font-size="10.5" font-family="IBM Plex Mono, monospace" fill="var(--slate)">sitemap, or brand listing pages</text>
+          </g>
+          <line x1="320" y1="260" x2="320" y2="280" stroke="var(--slate)" stroke-width="1.2" marker-end="url(#ar)"/>
+
+          <g>
+            <rect x="170" y="288" width="300" height="52" rx="5" fill="var(--verify-bg)" stroke="var(--verify)" stroke-width="1"/>
+            <text x="320" y="308" text-anchor="middle" font-size="13" font-weight="600" fill="var(--ink)">Fetch, throttled and robots-aware</text>
+            <text x="320" y="326" text-anchor="middle" font-size="10.5" font-family="IBM Plex Mono, monospace" fill="var(--slate)">Scrapling SitemapSpider</text>
+          </g>
+          <line x1="320" y1="346" x2="320" y2="366" stroke="var(--slate)" stroke-width="1.2" marker-end="url(#ar)"/>
+
+          <g>
+            <rect x="170" y="374" width="300" height="52" rx="5" fill="var(--signal-bg)" stroke="var(--signal)" stroke-width="1"/>
+            <text x="320" y="394" text-anchor="middle" font-size="13" font-weight="600" fill="var(--ink)">Read one page into a Product</text>
+            <text x="320" y="412" text-anchor="middle" font-size="10.5" font-family="IBM Plex Mono, monospace" fill="var(--slate)">extract_product() + extract_campaigns()</text>
+          </g>
+          <line x1="320" y1="432" x2="320" y2="452" stroke="var(--slate)" stroke-width="1.2" marker-end="url(#ar)"/>
+
+          <g>
+            <rect x="170" y="460" width="300" height="52" rx="5" fill="var(--verify-bg)" stroke="var(--verify)" stroke-width="1"/>
+            <text x="320" y="480" text-anchor="middle" font-size="13" font-weight="600" fill="var(--ink)">Seven checks, or it doesn't ship</text>
+            <text x="320" y="498" text-anchor="middle" font-size="10.5" font-family="IBM Plex Mono, monospace" fill="var(--slate)">validation.py</text>
+          </g>
+
+          <line x1="470" y1="486" x2="512" y2="486" stroke="var(--reject)" stroke-width="1.2" marker-end="url(#ar)"/>
+          <text x="491" y="478" text-anchor="middle" font-size="9.5" font-family="IBM Plex Mono, monospace" fill="var(--reject)">fails</text>
+          <g>
+            <rect x="520" y="460" width="196" height="52" rx="5" fill="var(--reject-bg)" stroke="var(--reject)" stroke-width="1"/>
+            <text x="618" y="480" text-anchor="middle" font-size="13" font-weight="600" fill="var(--ink)">Rejected, with a reason</text>
+            <text x="618" y="498" text-anchor="middle" font-size="10.5" font-family="IBM Plex Mono, monospace" fill="var(--slate)">kept, never hidden</text>
+          </g>
+
+          <line x1="320" y1="518" x2="320" y2="538" stroke="var(--slate)" stroke-width="1.2" marker-end="url(#ar)"/>
+          <text x="332" y="533" font-size="9.5" font-family="IBM Plex Mono, monospace" fill="var(--slate)">passes</text>
+
+          <g>
+            <rect x="170" y="546" width="300" height="52" rx="5" fill="var(--verify-bg)" stroke="var(--verify)" stroke-width="1"/>
+            <text x="320" y="566" text-anchor="middle" font-size="13" font-weight="600" fill="var(--ink)">Deduplicate, attach campaigns</text>
+            <text x="320" y="584" text-anchor="middle" font-size="10.5" font-family="IBM Plex Mono, monospace" fill="var(--slate)">spider.py — keyed on product id</text>
+          </g>
+          <line x1="320" y1="604" x2="320" y2="624" stroke="var(--slate)" stroke-width="1.2" marker-end="url(#ar)"/>
+
+          <g>
+            <rect x="170" y="632" width="300" height="52" rx="5" fill="var(--verify-bg)" stroke="var(--verify)" stroke-width="1"/>
+            <text x="320" y="652" text-anchor="middle" font-size="13" font-weight="600" fill="var(--ink)">Write JSON and per-brand CSV</text>
+            <text x="320" y="670" text-anchor="middle" font-size="10.5" font-family="IBM Plex Mono, monospace" fill="var(--slate)">output.py</text>
+          </g>
+
+          <text x="152" y="60" text-anchor="end" font-size="11" font-family="IBM Plex Mono, monospace" fill="var(--slate)">1</text>
+          <text x="152" y="146" text-anchor="end" font-size="11" font-family="IBM Plex Mono, monospace" fill="var(--slate)">2</text>
+          <text x="152" y="232" text-anchor="end" font-size="11" font-family="IBM Plex Mono, monospace" fill="var(--slate)">3</text>
+          <text x="152" y="318" text-anchor="end" font-size="11" font-family="IBM Plex Mono, monospace" fill="var(--slate)">4</text>
+          <text x="152" y="404" text-anchor="end" font-size="11" font-family="IBM Plex Mono, monospace" fill="var(--slate)">5</text>
+          <text x="152" y="490" text-anchor="end" font-size="11" font-family="IBM Plex Mono, monospace" fill="var(--slate)">6</text>
+          <text x="152" y="576" text-anchor="end" font-size="11" font-family="IBM Plex Mono, monospace" fill="var(--slate)">7</text>
+          <text x="152" y="662" text-anchor="end" font-size="11" font-family="IBM Plex Mono, monospace" fill="var(--slate)">8</text>
+        </g>
+      </svg>
+    </div>
+    <div class="legend">
+      <span><span class="swatch" style="background:var(--verify-bg); border-color:var(--verify)"></span> generic — written once, every retailer</span>
+      <span><span class="swatch" style="background:var(--signal-bg); border-color:var(--signal)"></span> adapter — one file per retailer</span>
+    </div>
+    <figcaption>Only stages 2, 3 and 5 differ between retailers. Add a third retailer and those are the only three you implement.</figcaption>
+  </figure>
+
+  <section class="prose">
+    <h2>Stage by stage</h2>
+  </section>
+
+  <section>
+    <div class="stage">
+      <span class="num">1</span>
+      <div class="body">
+        <h3>Read the command, pick the adapter</h3>
+        <p class="who">run.py · adapters/base.py</p>
+        <p><code>--retailer</code> accepts a short name or any URL — <code>boots</code>, <code>boots.com</code>, <code>https://www.boots.com/clinique</code> all resolve the same. An unknown site fails loudly rather than guessing selectors.</p>
+      </div>
+    </div>
+
+    <div class="stage">
+      <span class="num">2</span>
+      <div class="body">
+        <h3>Open the right kind of session <span class="tag tag-adapter">adapter</span></h3>
+        <p class="who">configure_session()</p>
+        <p>This is where the two retailers genuinely diverge. Lookfantastic serves everything to a plain HTTP request. Boots sits behind Imperva bot protection and returns a challenge page — <em>Pardon Our Interruption</em> — so its adapter asks for a real browser instead.</p>
+        <p>The framework doesn't know or care which; it just uses whatever session the adapter registered.</p>
+      </div>
+    </div>
+
+    <div class="stage">
+      <span class="num">3</span>
+      <div class="body">
+        <h3>Find candidate product URLs <span class="tag tag-adapter">adapter</span></h3>
+        <p class="who">product_listing_urls() · select_candidates()</p>
+        <p>Lookfantastic publishes a sitemap with 16,409 products; filtering it by brand slug costs one request. Boots' sitemap is behind the same bot wall, so its adapter walks brand listing pages instead.</p>
+      </div>
+    </div>
+
+    <div class="stage">
+      <span class="num">4</span>
+      <div class="body">
+        <h3>Fetch, throttled and robots-aware</h3>
+        <p class="who">Scrapling's SitemapSpider</p>
+        <p>Retries, rate limiting, <code>robots.txt</code>, URL-level dedup and checkpointing all come from Scrapling. None of it is reimplemented here — that was the point of building on it.</p>
+      </div>
+    </div>
+
+    <div class="stage">
+      <span class="num">5</span>
+      <div class="body">
+        <h3>Read one page into a Product <span class="tag tag-adapter">adapter</span></h3>
+        <p class="who">extract_product() · extract_campaigns()</p>
+        <p>The only place raw HTML is touched. See the next diagram for how the fields are assembled.</p>
+      </div>
+    </div>
+
+    <div class="stage">
+      <span class="num">6</span>
+      <div class="body">
+        <h3>Seven checks, or it doesn't ship</h3>
+        <p class="who">validation.py</p>
+        <p>A record that fails is written to <code>_rejected.csv</code> with a machine-readable reason — never silently dropped. A rejection usually means the page changed, which is information you want.</p>
+      </div>
+    </div>
+
+    <div class="stage">
+      <span class="num">7</span>
+      <div class="body">
+        <h3>Deduplicate, attach campaigns</h3>
+        <p class="who">spider.py</p>
+        <p>Dedup keys on the retailer's own product id, so the same item reached through four different URLs collapses into one record. Campaigns are then linked by id — see below for why they aren't nested.</p>
+      </div>
+    </div>
+
+    <div class="stage">
+      <span class="num">8</span>
+      <div class="body">
+        <h3>Write JSON and per-brand CSV</h3>
+        <p class="who">output.py</p>
+        <p>One JSON document holding everything, plus one products CSV per brand for opening in Excel.</p>
+      </div>
+    </div>
+  </section>
+
+  <hr>
+
+  <section class="prose" style="display:flex; flex-direction:column; gap:0.8rem;">
+    <h2>Where a price actually comes from</h2>
+    <p>The original version trusted the page title to establish brand and grabbed whatever price string it found nearby. That's how it ended up reporting the 125&nbsp;ml SKU on the 200&nbsp;ml product.</p>
+    <p>Three independent sources now feed one record, each chosen because the retailer maintains it as data rather than as presentation:</p>
+  </section>
+
+  <figure>
+    <div class="figbox">
+      <svg viewBox="0 0 720 320" role="img" aria-label="Three sources on a product page feed one product record: JSON-LD supplies title, current price, SKU and availability; the breadcrumb link supplies the verified brand; and the price block supplies the original was-price.">
+        <defs>
+          <marker id="ar2" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="5" markerHeight="5" orient="auto-start-reverse">
+            <path d="M1 1L9 5L1 9" fill="none" stroke="context-stroke" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/>
+          </marker>
+        </defs>
+        <g font-family="IBM Plex Sans Condensed, sans-serif">
+
+          <text x="24" y="26" font-size="10.5" font-family="IBM Plex Mono, monospace" fill="var(--slate)">ON THE PAGE</text>
+
+          <g>
+            <rect x="24" y="40" width="252" height="58" rx="5" fill="var(--paper)" stroke="var(--slate)" stroke-width="1"/>
+            <text x="40" y="62" font-size="12.5" font-weight="600" fill="var(--ink)">JSON-LD Product block</text>
+            <text x="40" y="80" font-size="10.5" font-family="IBM Plex Mono, monospace" fill="var(--slate)">schema.org — the retailer's own feed</text>
+          </g>
+
+          <g>
+            <rect x="24" y="126" width="252" height="58" rx="5" fill="var(--paper)" stroke="var(--slate)" stroke-width="1"/>
+            <text x="40" y="148" font-size="12.5" font-weight="600" fill="var(--ink)">Breadcrumb link</text>
+            <text x="40" y="166" font-size="10.5" font-family="IBM Plex Mono, monospace" fill="var(--slate)">/c/brands/clinique/</text>
+          </g>
+
+          <g>
+            <rect x="24" y="212" width="252" height="58" rx="5" fill="var(--paper)" stroke="var(--slate)" stroke-width="1"/>
+            <text x="40" y="234" font-size="12.5" font-weight="600" fill="var(--ink)">Price block</text>
+            <text x="40" y="252" font-size="10.5" font-family="IBM Plex Mono, monospace" fill="var(--slate)">keyed on "Recommended Retail Price:"</text>
+          </g>
+
+          <line x1="280" y1="69" x2="404" y2="128" stroke="var(--slate)" stroke-width="1.2" marker-end="url(#ar2)"/>
+          <line x1="280" y1="155" x2="404" y2="155" stroke="var(--signal)" stroke-width="1.6" marker-end="url(#ar2)"/>
+          <line x1="280" y1="241" x2="404" y2="182" stroke="var(--slate)" stroke-width="1.2" marker-end="url(#ar2)"/>
+
+          <text x="342" y="106" text-anchor="middle" font-size="9.5" font-family="IBM Plex Mono, monospace" fill="var(--slate)">title, now, sku</text>
+          <text x="342" y="147" text-anchor="middle" font-size="9.5" font-family="IBM Plex Mono, monospace" fill="var(--signal)">brand</text>
+          <text x="342" y="212" text-anchor="middle" font-size="9.5" font-family="IBM Plex Mono, monospace" fill="var(--slate)">was-price</text>
+
+          <g>
+            <rect x="412" y="118" width="180" height="76" rx="5" fill="var(--verify-bg)" stroke="var(--verify)" stroke-width="1.2"/>
+            <text x="502" y="145" text-anchor="middle" font-size="13" font-weight="600" fill="var(--ink)">One Product record</text>
+            <text x="502" y="164" text-anchor="middle" font-size="10.5" font-family="IBM Plex Mono, monospace" fill="var(--slate)">brand_verified_by =</text>
+            <text x="502" y="179" text-anchor="middle" font-size="10.5" font-family="IBM Plex Mono, monospace" fill="var(--slate)">"breadcrumb_link"</text>
+          </g>
+
+          <line x1="596" y1="156" x2="640" y2="156" stroke="var(--slate)" stroke-width="1.2" marker-end="url(#ar2)"/>
+          <text x="676" y="152" text-anchor="middle" font-size="11" font-weight="600" fill="var(--ink)">validation</text>
+          <text x="676" y="167" text-anchor="middle" font-size="9.5" font-family="IBM Plex Mono, monospace" fill="var(--slate)">stage 6</text>
+        </g>
+      </svg>
+    </div>
+    <figcaption>Every record carries <code>brand_verified_by</code>, naming the evidence. A record whose brand can only be inferred from the URL slug or the title is rejected, not published.</figcaption>
+  </figure>
+
+  <div class="callout">
+    <strong>Why the breadcrumb?</strong> It links to the retailer's own brand taxonomy page. A URL slug or a page title is marketing copy — a Clinique page mentions six other brands in its recommendations. The breadcrumb is the retailer stating, in its own filing system, what this product is.
+  </div>
+
+  <div class="callout">
+    <strong>Where the category comes from.</strong> Neither retailer puts one on the product page — Lookfantastic's breadcrumb is brand-shaped, and Boots leaves its category variable empty in served HTML. The category exists only in the retailer's <em>listing</em> structure, so <code>--resolve-categories</code> reads those listings as a lookup table and fills the field in after the crawl. A listing that redirects off its category (asking for Clinique fragrance lands on Clinique view-all) is discarded rather than trusted — otherwise all 46 Clinique products get filed as fragrance.
+  </div>
+
+  <hr>
+
+  <section class="prose" style="display:flex; flex-direction:column; gap:0.8rem;">
+    <h2>Products and campaigns are joined, not nested</h2>
+    <p>The obvious design is to nest products inside their campaign. It breaks on real data three ways, all of which occur on Lookfantastic today.</p>
+  </section>
+
+  <figure>
+    <div class="figbox">
+      <svg viewBox="0 0 720 268" role="img" aria-label="Campaigns and products are two flat collections joined by campaign id. One product can reference several campaigns, and a discounted product can reference none at all.">
+        <defs>
+          <marker id="ar3" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="5" markerHeight="5" orient="auto-start-reverse">
+            <path d="M1 1L9 5L1 9" fill="none" stroke="context-stroke" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/>
+          </marker>
+        </defs>
+        <g font-family="IBM Plex Sans Condensed, sans-serif">
+
+          <text x="24" y="24" font-size="10.5" font-family="IBM Plex Mono, monospace" fill="var(--slate)">campaigns[]</text>
+          <text x="430" y="24" font-size="10.5" font-family="IBM Plex Mono, monospace" fill="var(--slate)">products[]</text>
+
+          <g>
+            <rect x="24" y="38" width="228" height="46" rx="5" fill="var(--signal-bg)" stroke="var(--signal)" stroke-width="1"/>
+            <text x="40" y="58" font-size="12" font-weight="600" fill="var(--ink)">Extra 10% off · code EXTRA10</text>
+            <text x="40" y="74" font-size="10" font-family="IBM Plex Mono, monospace" fill="var(--slate)">scope: sitewide</text>
+          </g>
+
+          <g>
+            <rect x="24" y="102" width="228" height="46" rx="5" fill="var(--signal-bg)" stroke="var(--signal)" stroke-width="1"/>
+            <text x="40" y="122" font-size="12" font-weight="600" fill="var(--ink)">Save 25%</text>
+            <text x="40" y="138" font-size="10" font-family="IBM Plex Mono, monospace" fill="var(--slate)">scope: product</text>
+          </g>
+
+          <g>
+            <rect x="430" y="38" width="266" height="46" rx="5" fill="var(--verify-bg)" stroke="var(--verify)" stroke-width="1"/>
+            <text x="446" y="58" font-size="12" font-weight="600" fill="var(--ink)">Moisture Surge 50ml</text>
+            <text x="446" y="74" font-size="10" font-family="IBM Plex Mono, monospace" fill="var(--slate)">£42.00 → £31.50 · two campaigns apply</text>
+          </g>
+
+          <g>
+            <rect x="430" y="102" width="266" height="46" rx="5" fill="var(--verify-bg)" stroke="var(--verify)" stroke-width="1"/>
+            <text x="446" y="122" font-size="12" font-weight="600" fill="var(--ink)">Black Orchid EDP 50ml</text>
+            <text x="446" y="138" font-size="10" font-family="IBM Plex Mono, monospace" fill="var(--slate)">£112.00 → £86.40 · no campaign at all</text>
+          </g>
+
+          <line x1="256" y1="57" x2="424" y2="57" stroke="var(--signal)" stroke-width="1.3" marker-end="url(#ar3)"/>
+          <line x1="256" y1="118" x2="424" y2="70" stroke="var(--signal)" stroke-width="1.3" marker-end="url(#ar3)"/>
+
+          <text x="340" y="50" text-anchor="middle" font-size="9.5" font-family="IBM Plex Mono, monospace" fill="var(--slate)">applied_campaigns[]</text>
+
+          <rect x="24" y="182" width="672" height="62" rx="5" fill="none" stroke="var(--hair)" stroke-width="1" stroke-dasharray="3 3"/>
+          <text x="40" y="204" font-size="11.5" font-weight="600" fill="var(--ink)">A site-wide banner seen on a Clinique page is scope <tspan font-family="IBM Plex Mono, monospace" fill="var(--signal)">sitewide</tspan> — never a Clinique campaign.</text>
+          <text x="40" y="226" font-size="11" fill="var(--slate)">Getting this wrong is how the first version reported "Up To 50% Off" as a Clinique promotion.</text>
+        </g>
+      </svg>
+    </div>
+    <figcaption>Nesting would either duplicate the Moisture Surge across two campaigns, or drop the Tom Ford entirely. A report can still present "campaign, and its products" by following the join.</figcaption>
+  </figure>
+
+  <hr>
+
+  <section class="prose" style="display:flex; flex-direction:column; gap:0.8rem;">
+    <h2>Asking what a whole site is promoting</h2>
+    <p>Drop the brands entirely and the same pipeline answers a different question:</p>
+    <pre><code>python run.py --retailer boots --campaigns-only</code></pre>
+    <p>No products are fetched. It reads the retailer's offers hub and returns every campaign advertised there, each with the page it was advertised on.</p>
+  </section>
+
+  <div class="tablewrap">
+    <table>
+      <thead>
+        <tr><th>Retailer</th><th>Campaigns</th><th>Scopes</th></tr>
+      </thead>
+      <tbody>
+        <tr><td>Lookfantastic</td><td class="mono">16</td><td>6 brand · 3 category · 7 sitewide</td></tr>
+        <tr><td>Boots</td><td class="mono">26</td><td>2 category · 4 sitewide · 20 unresolved</td></tr>
+        <tr><td>John Lewis</td><td class="mono">—</td><td>no central offers hub; promotions are per brand</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <div class="callout">
+    <strong>Why Boots leaves 20 unresolved.</strong> It puts brands and departments in the same URL slot — <code>/no7/…</code> and <code>/fragrance/…</code> are indistinguishable by shape. Claiming a brand there would invent campaigns that don't exist, so the scope says <code>unresolved</code> instead. Lookfantastic's URLs separate <code>/c/brands/</code> from <code>/c/health-beauty/</code>, so its scopes can be asserted.
+  </div>
+
+  <section class="prose" style="display:flex; flex-direction:column; gap:0.8rem;">
+    <p>Two details this mode depends on, both found by running it rather than reading the HTML:</p>
+    <p><strong>Boots challenges the first request of any session</strong> — and the challenge response is what sets the cookie. So the run fetches the homepage first purely to be rejected, discards it, and the offers hub then returns 1.3 MB instead of a 6 KB block page. Those requests are chained, not queued together; running them concurrently lets the hub go out cold.</p>
+    <p><strong>An offers page is mostly navigation.</strong> The permissive offer test used for product banners treats "gift finder", "gift cards" and "free next day delivery" as promotions, which is fine in a slot the retailer reserves for offers and useless when scanning a whole page. Campaign discovery uses a stricter test that requires a concrete mechanic — a percentage, a bundle, a code, a spend threshold, an explicit gift-with-purchase.</p>
+  </section>
+
+  <hr>
+
+  <section class="prose" style="display:flex; flex-direction:column; gap:0.8rem;">
+    <h2>Changing what counts as an offer</h2>
+    <p>The offer vocabulary is a file, not code. Point a run at one and <strong>only those keywords apply</strong> — the built-in retail rules switch off rather than combining:</p>
+    <pre><code>python run.py --retailer boots --brands Clinique \
+    --offer-keywords keywords/black-friday.txt</code></pre>
+    <p>Replacing rather than extending is the point: you can read the file and know exactly what the run will match. The effect is measurable on Lookfantastic's offers hub — the built-in rules find 17 campaigns, a betting vocabulary finds 0, because none of its wording appears on a beauty retailer.</p>
+    <p>Each keyword is a regular expression, so <code>bet .* get</code> and <code>[0-9]+x wager</code> work as written, while a plain phrase gets word boundaries so <code>bonus</code> doesn't match <code>bonuses</code>. A broken pattern stops the run and names the keyword — a typo that silently matched nothing would look exactly like a site running no promotions.</p>
+  </section>
+
+  <hr>
+
+  <section class="prose" style="display:flex; flex-direction:column; gap:0.9rem;">
+    <h2>What each file does</h2>
+  </section>
+
+  <div class="tablewrap">
+    <table>
+      <thead>
+        <tr><th class="mono">File</th><th>Responsibility</th><th>Scope</th></tr>
+      </thead>
+      <tbody>
+        <tr><td class="mono">spider.py</td><td>The crawl itself — dispatch, per-brand budget, dedup, campaign linking</td><td><span class="tag tag-generic">generic</span></td></tr>
+        <tr><td class="mono">validation.py</td><td>The seven checks, plus brand alias matching</td><td><span class="tag tag-generic">generic</span></td></tr>
+        <tr><td class="mono">models.py</td><td><code>Product</code>, <code>Campaign</code>, <code>RejectedRecord</code></td><td><span class="tag tag-generic">generic</span></td></tr>
+        <tr><td class="mono">normalize.py</td><td>Price parsing, URL canonicalisation, text cleanup</td><td><span class="tag tag-generic">generic</span></td></tr>
+        <tr><td class="mono">promotions.py</td><td>Is this string an offer, what kind, and how confident</td><td><span class="tag tag-generic">generic</span></td></tr>
+        <tr><td class="mono">keywords.py</td><td>Loads a custom offer vocabulary that replaces the built-in rules</td><td><span class="tag tag-generic">generic</span></td></tr>
+        <tr><td class="mono">matching.py</td><td>Same product across two retailers → price gap</td><td><span class="tag tag-generic">generic</span></td></tr>
+        <tr><td class="mono">history.py</td><td>Diff two runs — price moves, offers started and ended</td><td><span class="tag tag-generic">generic</span></td></tr>
+        <tr><td class="mono">output.py</td><td>JSON document and per-brand CSVs</td><td><span class="tag tag-generic">generic</span></td></tr>
+        <tr><td class="mono">adapters/base.py</td><td>The interface every retailer implements</td><td><span class="tag tag-generic">generic</span></td></tr>
+        <tr><td class="mono">adapters/lookfantastic.py</td><td>LF selectors, sitemap discovery, campaign rules</td><td><span class="tag tag-adapter">adapter</span></td></tr>
+        <tr><td class="mono">adapters/boots.py</td><td>Boots selectors, browser session, listing discovery</td><td><span class="tag tag-adapter">adapter</span></td></tr>
+        <tr><td class="mono">adapters/johnlewis.py</td><td>John Lewis selectors, brand-code resolution, gzip sitemap access</td><td><span class="tag tag-adapter">adapter</span></td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <hr>
+
+  <section class="prose" style="display:flex; flex-direction:column; gap:0.9rem;">
+    <h2>The seven checks</h2>
+    <p>A record has to clear all of them. Each rejection names itself, so <code>_rejected.csv</code> tells you what went wrong rather than just that something did.</p>
+  </section>
+
+  <div class="tablewrap">
+    <table>
+      <thead>
+        <tr><th class="mono">reason</th><th>Catches</th></tr>
+      </thead>
+      <tbody>
+        <tr><td class="mono">missing_title</td><td>No product name could be read</td></tr>
+        <tr><td class="mono">missing_price</td><td>No current price could be read</td></tr>
+        <tr><td class="mono">invalid_discount</td><td>Was-price below the now-price — an impossible pair</td></tr>
+        <tr><td class="mono">discount_mismatch</td><td>Advertised "40% off" disagrees with the two prices</td></tr>
+        <tr><td class="mono">unverified_brand</td><td>Brand couldn't be proved from the retailer's own data</td></tr>
+        <tr><td class="mono">brand_mismatch</td><td>Verified brand isn't one you asked for</td></tr>
+        <tr><td class="mono">variant_conflict</td><td>SKU belongs to a different product than the URL</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <hr>
+
+  <section class="prose" style="display:flex; flex-direction:column; gap:0.9rem;">
+    <h2>Adding the third retailer</h2>
+    <p>The architecture's claim is that a new retailer touches one file. Concretely, subclass <code>RetailerAdapter</code> and implement four things:</p>
+    <pre><code>@register
+class JohnLewisAdapter(RetailerAdapter):
+    name = "johnlewis"
+    domain = "www.johnlewis.com"
+
+    def configure_session(self, manager):   # HTTP, or a browser?
+    def product_listing_urls(self, brands): # where the products are
+    def extract_product(self, response):    # page → Product
+    def extract_campaigns(self, response):  # page → Campaign[]</code></pre>
+    <p>Nothing outside that file changes. Validation, dedup, campaign linking, matching, history and output all work on the new retailer the moment it returns records.</p>
+    <p>One rule, learned the hard way: <strong>inspect the real HTML before writing a single selector.</strong> Check for <code>schema.org</code> JSON-LD first — where it exists, most of the extraction is already done and far more stable than anything you'd write against CSS classes.</p>
+  </section>
+
+  <hr>
+
+  <section class="prose" style="display:flex; flex-direction:column; gap:0.8rem;">
+    <h2>Before you change anything</h2>
+    <pre><code>.venv\Scripts\python.exe run_tests.py -q</code></pre>
+    <p>Five suites, no network, about two seconds. They run against captured real pages, so they catch extraction drift as well as logic errors. Green before you start and green after you finish means you didn't break what was working.</p>
+  </section>
+
+</div>

@@ -1,0 +1,378 @@
+<title>Promotion Scraper Field Guide</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500&family=IBM+Plex+Sans+Condensed:wght@500;600&family=Newsreader:opsz,wght@6..72,400;6..72,500&display=swap">
+
+<style>
+  :root {
+    --paper:      #FBFAF7;
+    --raised:     #F3F1EB;
+    --ink:        #1B1F2A;
+    --slate:      #5A6273;
+    --hair:       #DBD7CE;
+    --signal:     #9C5A16;
+    --signal-bg:  #F6EADA;
+    --verify:     #2F6B54;
+    --verify-bg:  #E4EFE9;
+    --reject:     #A33B32;
+    --reject-bg:  #F7E5E2;
+
+    --sans: "IBM Plex Sans Condensed", "Segoe UI", system-ui, sans-serif;
+    --serif: "Newsreader", Georgia, "Times New Roman", serif;
+    --mono: "IBM Plex Mono", "Cascadia Mono", Consolas, monospace;
+
+    --measure: 68ch;
+  }
+
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) {
+      --paper: #14171E; --raised: #1D212B; --ink: #E9E6E0; --slate: #98A0B0;
+      --hair: #2E3441; --signal: #D9973F; --signal-bg: #2E2418;
+      --verify: #5FA484; --verify-bg: #17281F; --reject: #D9776B; --reject-bg: #2C1A18;
+    }
+  }
+  :root[data-theme="dark"] {
+    --paper: #14171E; --raised: #1D212B; --ink: #E9E6E0; --slate: #98A0B0;
+    --hair: #2E3441; --signal: #D9973F; --signal-bg: #2E2418;
+    --verify: #5FA484; --verify-bg: #17281F; --reject: #D9776B; --reject-bg: #2C1A18;
+  }
+
+  * { box-sizing: border-box; }
+
+  body {
+    background: var(--paper); color: var(--ink);
+    font-family: var(--serif); font-size: 17px; line-height: 1.65;
+    margin: 0; padding: 3.5rem 1.5rem 5rem;
+  }
+
+  .wrap { max-width: 880px; margin: 0 auto; display: flex; flex-direction: column; gap: 1.5rem; }
+  .prose { max-width: var(--measure); display: flex; flex-direction: column; gap: 0.7rem; }
+
+  h1, h2, h3 { font-family: var(--sans); font-weight: 600; text-wrap: balance; margin: 0; line-height: 1.15; }
+  h1 { font-size: 2.6rem; letter-spacing: -0.015em; }
+  h2 { font-size: 1.5rem; margin-top: 1.2rem; }
+  h3 { font-size: 1.05rem; font-weight: 500; }
+  p { margin: 0; }
+
+  .eyebrow {
+    font-family: var(--mono); font-size: 0.7rem; letter-spacing: 0.13em;
+    text-transform: uppercase; color: var(--signal); margin: 0;
+  }
+  .lede { font-size: 1.18rem; color: var(--slate); max-width: var(--measure); }
+
+  code, .mono { font-family: var(--mono); font-size: 0.86em; }
+  code { background: var(--raised); padding: 0.1em 0.35em; border-radius: 3px; }
+
+  pre {
+    font-family: var(--mono); font-size: 0.8rem; line-height: 1.6;
+    background: var(--raised); color: var(--ink);
+    border: 1px solid var(--hair); border-radius: 6px;
+    padding: 0.85rem 1rem; margin: 0; overflow-x: auto;
+  }
+  pre code { background: none; padding: 0; }
+
+  hr { border: 0; border-top: 1px solid var(--hair); margin: 1rem 0 0; }
+
+  table { border-collapse: collapse; width: 100%; font-size: 0.88rem; }
+  .tablewrap { overflow-x: auto; }
+  th, td { text-align: left; padding: 0.5rem 0.75rem; border-bottom: 1px solid var(--hair); vertical-align: top; }
+  th { font-family: var(--sans); font-weight: 600; font-size: 0.75rem; letter-spacing: 0.04em; text-transform: uppercase; color: var(--slate); }
+  td.mono, th.mono { font-family: var(--mono); font-size: 0.78rem; }
+  td.nowrap { white-space: nowrap; }
+
+  .recipe { display: flex; flex-direction: column; gap: 0.5rem; padding: 1rem 0; border-bottom: 1px solid var(--hair); }
+  .recipe:last-child { border-bottom: 0; }
+  .recipe .ask { font-family: var(--sans); font-weight: 600; font-size: 1rem; }
+  .recipe .note { font-size: 0.9rem; color: var(--slate); max-width: var(--measure); }
+
+  .pill { font-family: var(--mono); font-size: 0.68rem; padding: 0.12em 0.45em; border-radius: 3px; border: 1px solid; white-space: nowrap; }
+  .yes { color: var(--verify); border-color: var(--verify); background: var(--verify-bg); }
+  .no  { color: var(--reject); border-color: var(--reject); background: var(--reject-bg); }
+  .part { color: var(--signal); border-color: var(--signal); background: var(--signal-bg); }
+
+  .callout {
+    border-left: 3px solid var(--signal); border-radius: 0;
+    background: var(--signal-bg); padding: 0.85rem 1.1rem;
+    font-size: 0.95rem; max-width: var(--measure);
+  }
+  .callout strong { font-family: var(--sans); }
+</style>
+
+<div class="wrap">
+
+  <header class="prose">
+    <p class="eyebrow">Field guide</p>
+    <h1>Promotion scraper field guide</h1>
+    <p class="lede">Everything the scraper can do today, and the command for each. Seven retailers, four tools, thirteen test suites.</p>
+  </header>
+
+  <hr>
+
+  <section class="prose">
+    <h2>Start here</h2>
+    <p>Run everything from the <code>code</code> folder. These four cover most of what you'll need:</p>
+  </section>
+
+  <pre><code># 1. What retailers are available
+python run.py --list-retailers
+
+# 2. A quick look at one brand
+python run.py --retailer lookfantastic --brands Clinique --max-products 15
+
+# 3. Everything a site is promoting, no brands needed
+python run.py --retailer boots --campaigns-only
+
+# 4. Check nothing is broken before you change anything
+python run_tests.py -q</code></pre>
+
+  <div class="callout">
+    <strong>Two habits worth keeping.</strong> Add <code>--cache-dir .cache</code> while experimenting so re-runs cost the retailer nothing, and drop it for real runs so prices are live. Add <code>--archive</code> to any run you might want to compare against later — without it, change tracking has nothing to diff.
+  </div>
+
+  <div class="callout">
+    <strong>Run retailers one at a time.</strong> Five of the seven drive a real browser, and running them together starves DNS and browser resources on one machine. A Lookfantastic pass that takes <strong>54 minutes on its own took 30 hours</strong> alongside two others, with 51 requests failing on <code>ERR_NAME_NOT_RESOLVED</code> — a local DNS failure, not anything the retailers did. Budget roughly an hour per retailer, in series.
+  </div>
+
+  <hr>
+
+  <section class="prose">
+    <h2>The four tools</h2>
+  </section>
+
+  <div class="tablewrap">
+    <table>
+      <thead>
+        <tr><th class="mono">Tool</th><th>What it answers</th></tr>
+      </thead>
+      <tbody>
+        <tr><td class="mono nowrap">run.py</td><td>What is this retailer charging and promoting for our brands?</td></tr>
+        <tr><td class="mono nowrap">compare.py</td><td>Where does one retailer undercut another on the same product?</td></tr>
+        <tr><td class="mono nowrap">changes.py</td><td>What moved between two runs — prices, offers started and ended?</td></tr>
+        <tr><td class="mono nowrap">spotcheck.py</td><td>Does a record actually match the live page?</td></tr>
+        <tr><td class="mono nowrap">run_tests.py</td><td>Did I break anything? (13 suites, 356 checks, no network)</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <hr>
+
+  <section class="prose">
+    <h2>Recipes</h2>
+    <p>Real questions, and the command that answers them.</p>
+  </section>
+
+  <section>
+    <div class="recipe">
+      <span class="ask">Which of our brands is Look Fantastic discounting right now?</span>
+      <pre><code>python run.py --retailer lookfantastic \
+    --brands Clinique MAC "Tom Ford" "Jo Malone" "Estee Lauder" \
+    --archive</code></pre>
+      <span class="note">Open the per-brand CSVs in <code>output/</code>. <code>--archive</code> keeps a timestamped copy so you can diff against it later.</span>
+    </div>
+
+    <div class="recipe">
+      <span class="ask">What campaigns is a competitor running site-wide?</span>
+      <pre><code>python run.py --retailer lookfantastic --campaigns-only</code></pre>
+      <span class="note">No brands needed. Returns every promotion on the offers hub with its landing page and an honest scope. Works for Look Fantastic and Boots; John Lewis has no central offers hub, so it refuses rather than returning an empty file.</span>
+    </div>
+
+    <div class="recipe">
+      <span class="ask">Who is cheapest on the same product?</span>
+      <pre><code>python run.py --retailer lookfantastic --brands Clinique --out-dir output/compare
+python run.py --retailer boots        --brands Clinique --out-dir output/compare
+python run.py --retailer johnlewis    --brands Clinique --out-dir output/compare
+
+python compare.py output/compare/*.json</code></pre>
+      <span class="note">Matches products across retailers by title and size, then reports the price gap. Raise <code>--threshold</code> for stricter matching.</span>
+    </div>
+
+    <div class="recipe">
+      <span class="ask">What changed since last week?</span>
+      <pre><code>python run.py --retailer boots --brands Clinique --archive   # do this weekly
+python changes.py --latest --retailer boots</code></pre>
+      <span class="note">Reports price moves, discounts started and ended, and products that appeared or vanished. Needs at least two archived runs.</span>
+    </div>
+
+    <div class="recipe">
+      <span class="ask">Is this data actually right?</span>
+      <pre><code>python spotcheck.py --retailer boots \
+    --from-output output/boots_clinique.json --sample 10</code></pre>
+      <span class="note">Re-fetches a sample and prints what it extracted, with the URL, so you can compare against the live page yourself.</span>
+    </div>
+
+    <div class="recipe">
+      <span class="ask">Prepare for Black Friday</span>
+      <pre><code>python run.py --retailer boots --brands Clinique --archive        # baseline now
+python run.py --retailer boots --brands Clinique --archive \
+    --offer-keywords keywords/black-friday.txt                    # on the day
+python changes.py --latest --retailer boots</code></pre>
+      <span class="note">A keyword file <strong>replaces</strong> the built-in offer rules, so <code>black-friday.txt</code> deliberately re-includes everyday retail wording. Edit the file directly — no code changes.</span>
+    </div>
+
+    <div class="recipe">
+      <span class="ask">Only skincare, not the whole brand</span>
+      <pre><code>python run.py --retailer boots --brands Clinique --categories skincare</code></pre>
+      <span class="note">Or keep full coverage and label categories afterwards with <code>--resolve-categories</code>. John Lewis needs neither — it states the category on the product page.</span>
+    </div>
+
+    <div class="recipe">
+      <span class="ask">Highest confidence data only</span>
+      <pre><code>python run.py --retailer lookfantastic --brands Clinique --strict-brand</code></pre>
+      <span class="note">Accepts only products whose brand comes from the retailer's structured data. Fewer records, no inference.</span>
+    </div>
+  </section>
+
+  <hr>
+
+  <section class="prose">
+    <h2>Every <code>run.py</code> flag</h2>
+  </section>
+
+  <div class="tablewrap">
+    <table>
+      <thead>
+        <tr><th class="mono">Flag</th><th>Effect</th></tr>
+      </thead>
+      <tbody>
+        <tr><td class="mono nowrap">--retailer</td><td>Adapter name or any URL — <code>boots</code>, <code>boots.com</code>, <code>https://www.boots.com/clinique</code></td></tr>
+        <tr><td class="mono nowrap">--brands</td><td>One or more; quote names with spaces. Matched leniently, so <code>"Jo Malone"</code> finds <code>Jo Malone London</code></td></tr>
+        <tr><td class="mono nowrap">--categories</td><td>Restrict to categories. Refuses on a retailer that can't honour it, rather than ignoring you</td></tr>
+        <tr><td class="mono nowrap">--resolve-categories</td><td>Keep full coverage but label each product's category afterwards</td></tr>
+        <tr><td class="mono nowrap">--campaigns-only</td><td>Every campaign on the site, no products, no brands required</td></tr>
+        <tr><td class="mono nowrap">--offer-keywords</td><td>A keyword file that <strong>replaces</strong> the built-in offer rules</td></tr>
+        <tr><td class="mono nowrap">--max-products</td><td>Cap per brand. For demos — omit for a full pass</td></tr>
+        <tr><td class="mono nowrap">--strict-brand</td><td>Structured-data brand evidence only</td></tr>
+        <tr><td class="mono nowrap">--archive</td><td>Keep a timestamped copy under <code>output/history/</code> for change tracking</td></tr>
+        <tr><td class="mono nowrap">--cache-dir</td><td>Cache responses so re-runs cost no requests</td></tr>
+        <tr><td class="mono nowrap">--crawl-dir</td><td>Checkpoint, so an interrupted run resumes</td></tr>
+        <tr><td class="mono nowrap">--out-dir</td><td>Where results go (default: <code>output/</code> next to the script)</td></tr>
+        <tr><td class="mono nowrap">--list-retailers</td><td>Print the available adapters and exit</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <hr>
+
+  <section class="prose">
+    <h2>What each retailer supports</h2>
+  </section>
+
+  <div class="tablewrap">
+    <table>
+      <thead>
+        <tr><th>Retailer</th><th>Fetch</th><th>Discovery</th><th>Brands</th><th>Notes</th></tr>
+      </thead>
+      <tbody>
+        <tr><td><strong>AllBeauty</strong></td><td><span class="pill yes">HTTP</span></td><td>Shopify JSON API</td><td>6 / 7</td><td>475 products in 18s — brand, category and was-price all stated</td></tr>
+        <tr><td><strong>Lookfantastic</strong></td><td><span class="pill part">browser</span></td><td>sitemap</td><td>7 / 7</td><td>Full catalogue, ~1,050 products</td></tr>
+        <tr><td><strong>Boots</strong></td><td><span class="pill part">browser</span></td><td>brand listings</td><td>4 / 7</td><td>Imperva bot wall; needs a warmed session</td></tr>
+        <tr><td><strong>John&nbsp;Lewis</strong></td><td><span class="pill part">browser</span></td><td>brand pages</td><td>6 / 7</td><td>Gzipped sitemaps; brand codes cached</td></tr>
+        <tr><td><strong>ASOS</strong></td><td><span class="pill part">browser</span></td><td>search</td><td>5 / 7</td><td>Search is not a brand filter — results are filtered on their own brand field</td></tr>
+        <tr><td><strong>M&amp;S</strong></td><td><span class="pill yes">HTTP</span></td><td>beauty sitemap</td><td>Clinique only</td><td>Search disallowed by robots; 19 products</td></tr>
+        <tr><td><strong>Amazon</strong></td><td><span class="pill part">browser</span></td><td>search</td><td><span class="pill no">refuses</span></td><td>Prices arrive in the local currency without a UK IP, and are refused rather than published</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <div class="callout">
+    <strong>Two retailers were investigated and rejected.</strong> <strong>Next</strong> does not stock any of these brands — its sitemap lists 1,467 brands and none of the seven appear. <strong>Google search ads</strong> are disallowed by Google's own robots.txt; the legitimate route is a paid SERP API.
+  </div>
+
+  <hr>
+
+  <section class="prose">
+    <h2>What you get back</h2>
+    <p>Each run writes one JSON document, one products CSV <em>per brand</em>, plus campaigns and rejections.</p>
+  </section>
+
+  <div class="tablewrap">
+    <table>
+      <thead>
+        <tr><th>Collection</th><th class="mono">Columns</th></tr>
+      </thead>
+      <tbody>
+        <tr><td><strong>Products</strong></td><td class="mono">retailer, brand, brand_matched_to, category, product_title, product_id, sku, current_price, price_is_from, original_price, discount_amount, discount_percent, currency, availability, variant_count, promotional_copy, applied_campaigns, product_url, brand_verified_by, scraped_at</td></tr>
+        <tr><td><strong>Campaigns</strong></td><td class="mono">campaign_id, retailer, scope, scope_value, promotion_type, promotion_text, promo_code, landing_url, source_url</td></tr>
+        <tr><td><strong>Rejected</strong></td><td class="mono">reason, detail, source_url, product_title, product_id</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <section class="prose" style="margin-top:1rem;">
+    <h3>Two columns worth understanding</h3>
+    <p><code>price_is_from</code> — the page quoted a range ("£33.60 – £156.00"), so the price is the cheapest size, not a specific item. Never compare it against another retailer's single-size price.</p>
+    <p><code>brand_verified_by</code> — how we proved the brand: <code>json_ld_brand</code> and <code>breadcrumb_link</code> are the retailer's own structured claim; anything weaker is visible so you can audit it.</p>
+  </section>
+
+  <hr>
+
+  <section class="prose">
+    <h2>Campaign scopes</h2>
+    <p>Every campaign says how far it reaches, read from where its link points rather than guessed.</p>
+  </section>
+
+  <div class="tablewrap">
+    <table>
+      <thead><tr><th class="mono">scope</th><th>Meaning</th></tr></thead>
+      <tbody>
+        <tr><td class="mono">sitewide</td><td>Runs across the whole site. Never tagged to a brand</td></tr>
+        <tr><td class="mono">brand</td><td>Tied to one brand — "20% off Medik8"</td></tr>
+        <tr><td class="mono">category</td><td>Tied to a department — "20% Off Luxury Beauty"</td></tr>
+        <tr><td class="mono">product</td><td>The offer on one product's own page</td></tr>
+        <tr><td class="mono">unresolved</td><td>Real offer, reach not provable from the page. Honest, not a failure</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <hr>
+
+  <section class="prose">
+    <h2>Why a record gets rejected</h2>
+    <p>Rejections go to <code>_rejected.csv</code> with a machine-readable reason — never silently dropped, because a rejection usually means a page changed.</p>
+  </section>
+
+  <div class="tablewrap">
+    <table>
+      <thead><tr><th class="mono">reason</th><th>Catches</th></tr></thead>
+      <tbody>
+        <tr><td class="mono">missing_title</td><td>No product name could be read</td></tr>
+        <tr><td class="mono">missing_price</td><td>No current price could be read</td></tr>
+        <tr><td class="mono">invalid_discount</td><td>Was-price below the now-price — impossible</td></tr>
+        <tr><td class="mono">discount_mismatch</td><td>Advertised % disagrees with the two prices</td></tr>
+        <tr><td class="mono">unverified_brand</td><td>Brand not provable from the retailer's own data</td></tr>
+        <tr><td class="mono">weak_brand_evidence</td><td>Brand inferred rather than stated (<code>--strict-brand</code> only)</td></tr>
+        <tr><td class="mono">brand_mismatch</td><td>Verified brand isn't one you asked for</td></tr>
+        <tr><td class="mono">variant_conflict</td><td>SKU belongs to a different product than the URL</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <hr>
+
+  <section class="prose">
+    <h2>Not built yet</h2>
+    <p>So nobody is promised something that doesn't exist:</p>
+  </section>
+
+  <div class="tablewrap">
+    <table>
+      <thead><tr><th>Item</th><th>Blocked on</th></tr></thead>
+      <tbody>
+        <tr><td><strong>Google ads / shopping</strong></td><td>Google's <code>robots.txt</code> disallows <code>/search</code>. Needs a paid SERP API (~$50/mo)</td></tr>
+        <tr><td><strong>Amazon</strong></td><td>Prices come back in INR from a non-UK IP. Needs a UK proxy — the crawl itself works</td></tr>
+        <tr><td><strong>Estée Lauder on John Lewis</strong></td><td>Not found in the first 6 of 199 sitemap shards. Warns rather than failing silently</td></tr>
+        <tr><td><strong>Scheduled runs</strong></td><td>Change tracking is built and tested; the cron/Task Scheduler entry to drive it isn't set up</td></tr>
+        <tr><td><strong>Full-scale production run</strong></td><td>Nothing technical — just hasn't been run at volume yet. Expect hours, not minutes</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <hr>
+
+  <section class="prose">
+    <h2>Before you change anything</h2>
+    <pre><code>.venv\Scripts\python.exe run_tests.py -q</code></pre>
+    <p>Thirteen suites and 356 checks, no network, a few seconds. They run against captured real pages, so they catch extraction drift as well as logic errors. Green before you start and green after you finish means you didn't break what was working.</p>
+  </section>
+
+</div>

@@ -1,0 +1,9 @@
+.venv/
+.cache/
+output/
+__pycache__/
+*.pyc
+*_profile/
+
+# Generated at runtime: John Lewis brand-page codes, re-resolved on demand.
+.jl_brand_codes.json

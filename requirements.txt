@@ -1,0 +1,3 @@
+# The scraping engine. The [fetchers] extra pulls in the HTTP/browser
+# backends, anyio and protego, which the Spider/crawler stack needs.
+scrapling[fetchers]==0.4.15

@@ -1,0 +1,37 @@
+# Black Friday / Cyber Week offer vocabulary.
+#
+# Use with:  python run.py --retailer boots --brands Clinique \
+#                --offer-keywords keywords/black-friday.txt
+#
+# NOTE: supplying this file REPLACES the built-in retail rules, so the
+# everyday wording is repeated here. Delete the lines you do not want.
+# Each line is a regular expression, matched case-insensitively.
+
+# --- the event itself ---
+black friday
+cyber monday
+cyber week
+blackfriday
+doorbuster
+door buster
+early access
+early bird
+flash sale
+lightning deal
+deal of the day
+while stocks last
+limited time
+
+# --- the everyday wording, kept so a BF run still sees normal offers ---
+[0-9]+\s*%\s*(off|discount)
+(up\s*to|save|extra|flat)\s*[0-9]+\s*%
+half price
+[0-9]\s*/\s*[0-9]\s*(price|off)
+buy\s*[0-9]+\s*get
+[0-9]\s*for\s*[0-9]
+bogof
+free gift
+gift with purchase
+(use|with|enter)\s+code
+spend\s*\£?[0-9]+
+save\s*\£?\s*[0-9]

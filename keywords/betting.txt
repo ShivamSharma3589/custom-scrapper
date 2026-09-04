@@ -1,0 +1,18 @@
+# Betting / gaming offer vocabulary.
+#
+# The example the request came with: a different vertical advertises in
+# language the retail rules do not recognise as an offer at all.
+#
+#   python run.py --retailer <site> --brands <x> \
+#       --offer-keywords keywords/betting.txt
+
+free spins
+free bets?
+bet .* get
+money back
+no deposit
+bonus
+[0-9]+x wager
+matched deposit
+risk free
+acca insurance
