@@ -16,6 +16,7 @@ from retailscraper.matching import (  # noqa: E402
     extract_size,
     match_across_retailers,
     normalize_title,
+    title_similarity,
 )
 
 
@@ -181,6 +182,56 @@ def run() -> int:
         ("no phantom price gap", row.get("price_gap") is None),
         ("the excluded offer is still reported", row.get("from_price_offers") == 1),
         ("both offers stay visible to the reader", len(row.get("offers") or []) == 2),
+    ]:
+        failures += 0 if ok else 1
+        print(f"  {'ok  ' if ok else 'FAIL'} {label}")
+
+    print("\n=== a repeated word is not collapsed away ===")
+    # "Noir" and "Noir de Noir" are different Tom Ford fragrances. Comparing
+    # token SETS made them identical -- {noir, de, noir} collapses to
+    # {noir, de} -- so a real run reported John Lewis undercutting
+    # Lookfantastic by 193.60 on two unrelated bottles. Tokens are counted
+    # now, so the repetition survives.
+    repeated = [
+        {"retailer": "John Lewis", "brand": "TOM FORD", "brand_matched_to": "Tom Ford",
+         "product_title": "TOM FORD Noir Eau de Parfum, 100ml",
+         "product_url": "jl", "current_price": 126.40, "currency": "GBP"},
+        {"retailer": "Lookfantastic", "brand": "TOM FORD", "brand_matched_to": "Tom Ford",
+         "product_title": "TOM FORD Noir De Noir Eau de Parfum 100ml",
+         "product_url": "lf", "current_price": 320.00, "currency": "GBP"},
+    ]
+    matched, left = match_across_retailers(repeated)
+    for label, ok in [
+        ("Noir and Noir de Noir are not one product", not matched),
+        ("both are kept as unmatched, not dropped", len(left) == 2),
+        ("word order alone still matches",
+         title_similarity(normalize_title("Clinique Cleansing Balm 125ml", "Clinique"),
+                          normalize_title("Clinique 125ml Cleansing Balm", "Clinique")) == 1.0),
+    ]:
+        failures += 0 if ok else 1
+        print(f"  {'ok  ' if ok else 'FAIL'} {label}")
+
+    print("\n=== a doubled price is flagged even with no RRP to compare ===")
+    # The check above needs the titles to differ. When they do not -- neither
+    # retailer publishes an RRP and the words genuinely align -- the prices
+    # themselves are the last signal: one retailer does not sell the same
+    # bottle for two and a half times another's.
+    spread = [
+        {"retailer": "John Lewis", "brand": "TOM FORD", "brand_matched_to": "Tom Ford",
+         "product_title": "TOM FORD Oud Wood Eau de Parfum 50ml",
+         "product_url": "jl", "current_price": 126.40, "currency": "GBP"},
+        {"retailer": "Lookfantastic", "brand": "TOM FORD", "brand_matched_to": "Tom Ford",
+         "product_title": "TOM FORD Oud Wood Eau de Parfum 50ml",
+         "product_url": "lf", "current_price": 320.00, "currency": "GBP"},
+    ]
+    matched, _ = match_across_retailers(spread)
+    row = matched[0].to_dict() if matched else {}
+    for label, ok in [
+        ("the match is still reported", bool(matched)),
+        ("but flagged as unreliable", row.get("rrp_disagreement") is True),
+        ("a normal spread is not flagged",
+         next((m.to_dict() for m in match_across_retailers(CATALOGUE)[0]
+               if "Cleansing Foam" in m.title), {}).get("rrp_disagreement") is False),
     ]:
         failures += 0 if ok else 1
         print(f"  {'ok  ' if ok else 'FAIL'} {label}")

@@ -71,6 +71,14 @@ class RetailerAdapter(ABC):
     #: that has no category pages at all.
     CATEGORY_SLUGS: Dict[str, str] = {}
 
+    #: How hard this retailer may be crawled, when the shared default is too
+    #: aggressive for it. John Lewis refuses requests once cumulative volume
+    #: builds up: a seven-brand run had 144 of 348 refused, all of them the
+    #: two brands crawled last, and one of those was then reported as
+    #: possibly-unstocked when it is stocked. None means "use the default".
+    crawl_delay: Optional[float] = None
+    max_concurrent_requests: Optional[int] = None
+
     #: Sitemap (or robots.txt) URLs used to discover products. Sitemaps are
     #: preferred where available: they are complete, cheap, and explicitly
     #: published by the retailer for this purpose. Leave empty when the
@@ -96,6 +104,31 @@ class RetailerAdapter(ABC):
         remember which brand each listing belongs to, so products found there
         are attributed correctly even when their URL never mentions the brand.
         The same applies to the category.
+        """
+        return []
+
+    def extract_product_variants(
+        self, response: "Response", target_brands: Sequence[str] = ()
+    ) -> List[Product]:
+        """Every separately-priced size on one product page.
+
+        Some retailers sell several sizes behind a single page and quote a
+        range for them: John Lewis publishes Bobbi Brown Vitamin Enriched
+        Face Base at 15ml/50ml/100ml for 19.00/54.00/84.00 and displays
+        "from £19.00". Recorded as one product, that 19.00 is not the price
+        of anything comparable -- it made John Lewis look like the cheapest
+        stockist of a product it sells at 84.00, which is why a from-price is
+        excluded from ranking entirely.
+
+        An adapter that can read the individual sizes returns one product per
+        size here, and the crawler stores those instead of the single ranged
+        record. Returning nothing (the default) keeps the `extract_product`
+        path, which is right for every retailer that prices a page once.
+
+        Only sizes belong here. Shades are not separate products -- retailers
+        list one "(Various Shades)" entry and so do we -- and expanding them
+        would multiply the catalogue while breaking matching against every
+        retailer that does not.
         """
         return []
 
@@ -253,7 +286,7 @@ class RetailerAdapter(ABC):
         """
         from ..models import SCOPE_UNRESOLVED
         from ..normalize import clean_text
-        from ..promotions import classify_promotion, is_confident_offer
+        from ..promotions import classify_promotion, is_browse_facet, is_confident_offer
         from ..normalize import extract_promo_code
 
         campaigns: List[Campaign] = []
@@ -268,6 +301,13 @@ class RetailerAdapter(ABC):
             if href.startswith("/"):
                 href = f"https://{self.domain}{href}"
             elif not href.startswith("http"):
+                continue
+
+            # A bare discount tier ("At Least 30% Off" -> /offers-save-30) is
+            # a shop-by-saving FILTER, not a campaign. Recording it as one
+            # made every site-wide campaign apply to every product, so a
+            # product discounted 29% carried "At Least 70% Off".
+            if is_browse_facet(text, href):
                 continue
 
             seen.add(text)

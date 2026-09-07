@@ -8,6 +8,7 @@ than in an adapter so that adding a retailer never means copying this logic.
 from __future__ import annotations
 
 import re
+from typing import Optional
 
 from .models import (
     PROMO_BUNDLE,
@@ -115,6 +116,72 @@ _CONFIDENT_OFFER_RE = re.compile(
     r"|\bsave\s*[£$€]\s*\d",
     re.IGNORECASE,
 )
+
+
+# A bare discount tier and nothing else: "50% Off", "At Least 30% off",
+# "Up to 40% Off". Retailers use these as BROWSE FILTERS -- "shop by saving"
+# -- linking to /collections/offers-save-30 or /offers-outlet-70. They are
+# navigation, not offers: they promise nothing beyond what each product's own
+# price already says.
+_BARE_TIER_RE = re.compile(
+    rf"^(?:at\s+least\s+|up\s+to\s+|save\s+)?{_PERCENT}\s*(?:off|discount)?$",
+    re.IGNORECASE,
+)
+
+# A discount attached to one product rather than to a campaign: a countdown
+# ("Ends in 04:12:23") or a marketplace deal label. These are prices, not
+# promotions, and they carry no scope.
+_DEAL_BADGE_RE = re.compile(
+    rf"{_PERCENT}\s*off\s+(?:limited\s+time\s+deal|deal\s+of\s+the\s+day"
+    r"|ends?\s+in\b|prime\s+exclusive)",
+    re.IGNORECASE,
+)
+
+# Collection slugs a retailer uses for those filters.
+_FACET_URL_RE = re.compile(
+    r"/(?:offers-)?(?:save|outlet|auto)[-/]?\d+|/save-\d+|/offers-save-\d+",
+    re.IGNORECASE,
+)
+
+
+def is_browse_facet(text: str, url: Optional[str] = None) -> bool:
+    """True when this "offer" is really a shop-by-discount filter.
+
+    A product discounted 29% had "At Least 70% Off" attached to it, along
+    with every other tier, because each tier was recorded as a site-wide
+    campaign and site-wide campaigns apply to everything. The tiers are not
+    campaigns at all -- they are the retailer's navigation.
+
+    Requires the text to be a bare tier with nothing else in it, so a real
+    campaign that happens to contain a percentage ("LF Seasonal Sale | Up To
+    50% Off", "Up To 20% Off + Extra 10% Off Selected | Use Code: EXTRA10")
+    is untouched.
+    """
+    if not text:
+        return False
+
+    # A per-product deal badge: the discount on one item, with no campaign
+    # named and nothing to scope it to. Amazon's deals page is built from
+    # these -- "15% off Limited time deal", "27% off Ends in 04:12:23" --
+    # and recording them made 32 site-wide campaigns out of 32 individual
+    # products' prices.
+    if _DEAL_BADGE_RE.search(text):
+        return True
+
+    bare = bool(_BARE_TIER_RE.match(text.strip()))
+    if not bare:
+        # A tier-shaped destination corroborates it even when the wording
+        # varies.
+        return bool(url and _FACET_URL_RE.search(url) and _PERCENT_RE.search(text)
+                    and len(text.split()) <= 5)
+
+    # A bare tier with a link is a filter only when the link is one: an
+    # offers hub's own banner reads exactly the same as a shop-by-saving
+    # tier, and ASOS's outlet headline really is "Up to 40% off". Judging on
+    # the wording alone discarded it along with the filters.
+    if url:
+        return bool(_FACET_URL_RE.search(url))
+    return True
 
 
 def is_confident_offer(text: str) -> bool:

@@ -45,7 +45,11 @@ from typing import Any, Dict, Iterable, List, Optional, Sequence
 
 from ..models import SCOPE_SITEWIDE, Campaign, Product
 from ..normalize import canonical_url, clean_text, extract_promo_code
-from ..promotions import classify_promotion, is_confident_offer
+from ..promotions import (
+    classify_promotion,
+    is_browse_facet,
+    is_confident_offer,
+)
 from ..validation import match_brand
 from .base import ListingPage, RetailerAdapter, register
 
@@ -312,6 +316,16 @@ class AsosAdapter(RetailerAdapter):
         """Not used: products come from the search payload, not from pages."""
         return None
 
+    def campaign_discovery_urls(self) -> List[str]:
+        """ASOS's outlet, which is where it states its reductions."""
+        return [
+        "https://www.asos.com/outlet/",
+        ]
+
+    def extract_campaign_directory(self, response) -> List[Campaign]:
+        """Every offer linked from a hub page, via the shared scan."""
+        return self._scan_offer_links(response)
+
     def extract_campaigns(self, response) -> List[Campaign]:
         """Offers stated on a search or landing page.
 
@@ -328,6 +342,13 @@ class AsosAdapter(RetailerAdapter):
             if not text or text in seen or len(text) > 160:
                 continue
             if not is_confident_offer(text):
+                continue
+            # A bare discount tier ("Save 12%") is a shop-by-saving filter
+            # or a per-card badge, not a campaign. Recorded as one -- and
+            # these scans have no scope to give it but site-wide -- it
+            # attaches to every product found, which is how a product
+            # discounted 29% came to carry "At Least 70% Off".
+            if is_browse_facet(text, url):
                 continue
             seen.add(text)
             campaigns.append(

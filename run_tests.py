@@ -29,6 +29,7 @@ SUITES = [
     ("AllBeauty extraction", "test_allbeauty_offline.py"),
     ("ASOS extraction", "test_asos_offline.py"),
     ("M&S + Amazon extraction", "test_ms_amazon_offline.py"),
+    ("Next extraction", "test_next_offline.py"),
     ("cross-retailer matching", "test_matching.py"),
     ("change detection", "test_history.py"),
     ("category resolution", "test_categories.py"),

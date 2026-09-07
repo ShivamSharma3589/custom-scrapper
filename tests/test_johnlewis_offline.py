@@ -24,6 +24,10 @@ class FakeResponse:
     def __init__(self, html: str, url: str):
         self._sel = Selector(content=html)
         self.url = url
+        # The per-size prices and the promotion labels live in the page's
+        # embedded state, not in the rendered markup, so the adapter reads
+        # the body as well as the DOM.
+        self.html_content = html
 
     def css(self, query):
         return self._sel.css(query)
@@ -165,6 +169,145 @@ def run() -> int:
         ok = got == want
         failures += 0 if ok else 1
         print(f"  {'ok  ' if ok else 'FAIL'} {brand:20} -> {got}")
+
+    print("\n=== a size range becomes one record per size ===")
+    # John Lewis sells Dramatically Different Moisturising Lotion+ at
+    # 50ml/125ml/200ml for 24.00/30.40/39.75 and displays "from £24.00".
+    # Recorded as one product, that 24.00 is the price of nothing comparable,
+    # and a from-price is excluded from ranking -- so John Lewis vanished
+    # from the comparison for all 56 of its ranged products.
+    sizes_fixture = FIXTURES / "johnlewis_sizes.html"
+    if not sizes_fixture.exists():
+        print("  MISS johnlewis_sizes.html not saved")
+        failures += 1
+    else:
+        html = sizes_fixture.read_text(encoding="utf-8", errors="replace")
+        response = FakeResponse(
+            html,
+            "https://www.johnlewis.com/clinique-dramatically-different-"
+            "moisturising-lotion/p523071",
+        )
+        sized = adapter.extract_product_variants(response, ["Clinique"])
+        prices = sorted(p.current_price for p in sized)
+
+        for label, ok, detail in [
+            ("three sizes are recorded", len(sized) == 3, len(sized)),
+            ("each carries its own price", prices == [24.0, 30.4, 39.75], prices),
+            ("none is a from-price",
+             all(p.price_is_from is False for p in sized), None),
+            ("each gets its own John Lewis stock code",
+             len({p.sku for p in sized}) == 3, [p.sku for p in sized]),
+            ("ids are distinct, so they do not deduplicate to one",
+             len({p.product_id for p in sized}) == 3, None),
+            ("the size is in the title, so matching can tell them apart",
+             all(any(s in p.product_title for s in ("50ml", "125ml", "200ml"))
+                 for p in sized), [p.product_title for p in sized]),
+            ("each url points at that size",
+             len({p.product_url for p in sized}) == 3, None),
+        ]:
+            failures += 0 if ok else 1
+            print(f"  {'ok  ' if ok else 'FAIL'} {label}"
+                  f"{('  ' + str(detail)) if detail is not None and not ok else ''}")
+
+        print("\n=== John Lewis's own promotion labels are read ===")
+        # "Price matched" names no percentage and no amount, so the keyword
+        # test that read the rendered page rejected it: 17 of 24 Clinique
+        # products carried the badge and recorded no campaign, while Tom
+        # Ford's quantified "Price matched: save 15%" came through. John
+        # Lewis types these itself as `"type": "promotional"`, so the
+        # retailer decides what is a promotion rather than a guess.
+        campaigns = adapter.extract_campaigns(response)
+        texts = {c.promotion_text for c in campaigns}
+        for label, ok, detail in [
+            ("an unquantified badge is still a promotion",
+             "Price matched" in texts, sorted(texts)),
+            ("every campaign is scoped to the product it is on",
+             all(c.scope == "product" for c in campaigns),
+             [c.scope for c in campaigns]),
+            ("the promo copy reaches the product",
+             all(p.promotional_copy for p in sized),
+             [p.promotional_copy for p in sized]),
+        ]:
+            failures += 0 if ok else 1
+            print(f"  {'ok  ' if ok else 'FAIL'} {label}"
+                  f"{('  ' + str(detail)) if detail is not None and not ok else ''}")
+
+    print("\n=== John Lewis's own slug is not always ours ===")
+    # Estee Lauder's brand page is /brand/est%C3%A9e-lauder/_/N-1z13yah: the
+    # accent survives, percent-encoded. The old resolver looked for the code
+    # in gzipped sitemap shards with a pattern of `[a-z0-9-]+`, which cannot
+    # match a `%`, and only read 6 of 199 shards. The brand resolved to
+    # nothing, made zero requests, and read as "John Lewis does not stock it".
+    for encoded, want in [
+        ("est%C3%A9e-lauder", "estee-lauder"),
+        ("clinique", "clinique"),
+        ("jo-malone-london", "jo-malone-london"),
+    ]:
+        got = adapter._fold_slug(encoded)
+        ok = got == want
+        failures += 0 if ok else 1
+        print(f"  {'ok  ' if ok else 'FAIL'} {encoded:20} folds to {got}")
+
+    from retailscraper.adapters.johnlewis import (  # noqa: E402
+        _BRAND_LINK_RE, _LISTING_SIZE_RE,
+    )
+    links = dict(_BRAND_LINK_RE.findall(
+        '<a href="/brand/clinique/_/N-1z13ywm">Clinique</a>'
+        '<a href="/brand/est%C3%A9e-lauder/_/N-1z13yah">Est&eacute;e Lauder</a>'
+    ))
+    for label, ok in [
+        ("a plain brand link is read", links.get("clinique") == "1z13ywm"),
+        ("a percent-encoded one is too",
+         links.get("est%C3%A9e-lauder") == "1z13yah"),
+    ]:
+        failures += 0 if ok else 1
+        print(f"  {'ok  ' if ok else 'FAIL'} {label}")
+
+    # Crawl depth is John Lewis's own count, not the framework's default of
+    # four pages -- which reached 96 of Clinique's 236 products and said
+    # nothing about the 140 it never asked for.
+    size = _LISTING_SIZE_RE.search('{"results":236,"pagesAvailable":10,"products":[]}')
+    ok = size is not None and size.groups() == ("236", "10")
+    failures += 0 if ok else 1
+    print(f"  {'ok  ' if ok else 'FAIL'} listing size is read from the page state")
+
+    # An old cache entry is a bare code string, which assumed our slug was
+    # the site's. It must keep working rather than being discarded, or every
+    # existing install re-resolves every brand on its next run.
+    import json as _json
+    import tempfile
+    from pathlib import Path as _Path
+
+    class _Cached(type(adapter)):
+        def __init__(self, path):
+            super().__init__()
+            self._path = path
+
+        @property
+        def _cache_path(self):
+            return self._path
+
+    with tempfile.TemporaryDirectory() as tmp:
+        path = _Path(tmp) / "codes.json"
+        path.write_text(_json.dumps({
+            "clinique": "1z13ywm",                                  # old shape
+            "estee-lauder": {"code": "1z13yah",                     # new shape
+                             "slug": "est%C3%A9e-lauder", "pages": 7},
+        }), encoding="utf-8")
+        loaded = _Cached(path)._load_cached_codes()
+
+    for label, ok in [
+        ("an old bare-code entry still resolves",
+         loaded.get("clinique", {}).get("code") == "1z13ywm"),
+        ("and assumes our slug is the site's",
+         loaded.get("clinique", {}).get("slug") == "clinique"),
+        ("a new entry keeps the site's own slug",
+         loaded.get("estee-lauder", {}).get("slug") == "est%C3%A9e-lauder"),
+        ("and its measured page count",
+         loaded.get("estee-lauder", {}).get("pages") == 7),
+    ]:
+        failures += 0 if ok else 1
+        print(f"  {'ok  ' if ok else 'FAIL'} {label}")
 
     print("\n=== URL parsing ===")
     checks = [

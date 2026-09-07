@@ -101,6 +101,41 @@ def run() -> int:
             print(f"       [{campaign.scope:9}] {campaign.promotion_type:20} "
                   f"{campaign.promotion_text[:52]}")
 
+    print("\n=== a title Lookfantastic truncates is repaired from its own h1 ===")
+    # Lookfantastic's ProductGroup JSON-LD cuts some names at a hyphen. These
+    # are the real pairs from the live site: the `name` it publishes, and the
+    # `<h1>` on the same page. About 20 products in a 1,069-product run are
+    # affected, and each is unmatchable against another retailer until fixed.
+    TITLE_CASES = [
+        # (json-ld name, page h1, expected)
+        ("Clinique Anti",
+         " Clinique Anti-Blemish Solutions Liquid Makeup 30ml (Various Shades) ",
+         "Clinique Anti-Blemish Solutions Liquid Makeup 30ml (Various Shades)"),
+        ("TOM FORD Ultra",
+         "TOM FORD Ultra-Shine Lip Color 3.3g (Various Shades)",
+         "TOM FORD Ultra-Shine Lip Color 3.3g (Various Shades)"),
+        # Not truncated: the h1 must not override a name that is already whole.
+        ("Clinique for Men Aloe Shave Gel 125ml",
+         "Clinique for Men Aloe Shave Gel 125ml",
+         "Clinique for Men Aloe Shave Gel 125ml"),
+        # The h1 disagrees without being a continuation of the name. Choosing
+        # between two things the retailer said is not repair, so the
+        # structured data stands.
+        ("Clinique Smart Clinical Repair Serum 50ml",
+         "Buy Clinique Smart Clinical Repair Serum",
+         "Clinique Smart Clinical Repair Serum 50ml"),
+        # No h1 at all.
+        ("MAC Studio Fix Fluid SPF15 30ml", None,
+         "MAC Studio Fix Fluid SPF15 30ml"),
+    ]
+    for name, heading, expected in TITLE_CASES:
+        head_html = f"<h1>{heading}</h1>" if heading is not None else ""
+        sel = Selector(content=f"<html><body>{head_html}</body></html>")
+        got = adapter._product_title({"name": name}, sel)
+        ok = got == expected
+        failures += 0 if ok else 1
+        print(f"  {'ok  ' if ok else 'FAIL'} {name[:38]:40} -> {got!r}")
+
     print(f"\n{'ALL CHECKS PASSED' if failures == 0 else f'{failures} CHECK(S) FAILED'}")
     return 1 if failures else 0
 

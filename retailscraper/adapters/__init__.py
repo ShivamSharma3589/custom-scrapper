@@ -12,5 +12,6 @@ from . import allbeauty  # noqa: F401  (import registers the adapter)
 from . import asos  # noqa: F401  (import registers the adapter)
 from . import marksandspencer  # noqa: F401  (import registers the adapter)
 from . import amazon  # noqa: F401  (import registers the adapter)
+from . import next  # noqa: F401  (import registers the adapter)
 
 __all__ = ["RetailerAdapter", "available_adapters", "get_adapter", "register"]

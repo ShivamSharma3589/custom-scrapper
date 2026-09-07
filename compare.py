@@ -24,7 +24,7 @@ from retailscraper.matching import match_across_retailers  # noqa: E402
 
 COMPARISON_COLUMNS = [
     "brand", "title", "size", "match_score", "retailer_count",
-    "cheapest_retailer", "cheapest_price", "price_gap",
+    "cheapest_retailer", "cheapest_price", "price_gap", "rrp_disagreement",
 ]
 
 
@@ -84,6 +84,8 @@ def main(argv=None) -> int:
         print(f"{len(matches)} product(s) sold by more than one retailer:\n")
         for match in matches:
             gap = f"£{match.price_gap}" if match.price_gap is not None else "-"
+            if match.rrp_disagreement:
+                gap += "  [RRP disagreement -- may be different products]"
             print(f"  {match.brand} — {match.title}")
             print(f"    price gap {gap}   (match confidence {match.score:.2f})")
             for offer in sorted(match.offers,

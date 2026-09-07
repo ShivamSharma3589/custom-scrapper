@@ -307,7 +307,7 @@ class LookfantasticAdapter(RetailerAdapter):
             brand=brand or "",
             brand_verified_by=verified_by,
             product_id=product_id,
-            product_title=clean_text(product_ld.get("name")) or "",
+            product_title=self._product_title(product_ld, sel),
             product_url=canonical_url(url),
             source_url=url,
             currency=currency,
@@ -617,6 +617,35 @@ class LookfantasticAdapter(RetailerAdapter):
 
         percent = float(percent_match.group(1)) if percent_match else None
         return amount, percent
+
+    @staticmethod
+    def _product_title(product_ld: Dict[str, Any], sel) -> str:
+        """The product's name, repaired when Lookfantastic truncates it.
+
+        Lookfantastic's structured data cuts some names at a hyphen: the
+        `ProductGroup` for Anti-Blemish Solutions Liquid Makeup publishes
+        `"name": "Clinique Anti"`, and Ultra-Shine Lip Color publishes
+        `"TOM FORD Ultra"`. About 20 of 1,069 products in a full run are
+        affected, and each one is unmatchable against the same product at
+        another retailer.
+
+        The page's own `<h1>` carries the full name, so it is used -- but
+        only when the truncated name is a strict prefix of it. That is the
+        proof that a truncation happened. Any other disagreement between the
+        two is left alone, because then we would be choosing between two
+        things the retailer said rather than repairing one it broke.
+        """
+        name = clean_text(product_ld.get("name")) or ""
+        heading = clean_text(" ".join(
+            str(part) for part in sel.css("h1::text")
+        ))
+        if (
+            heading
+            and len(heading) > len(name)
+            and heading.casefold().startswith(name.casefold())
+        ):
+            return heading
+        return name
 
     @staticmethod
     def _product_promotion_text(sel) -> Optional[str]:

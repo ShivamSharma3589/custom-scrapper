@@ -23,6 +23,7 @@ Anything that fails those is left unmatched rather than guessed at.
 from __future__ import annotations
 
 import re
+from collections import Counter
 from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional, Sequence, Tuple
 
@@ -94,6 +95,33 @@ class ProductMatch:
         """How many offers were excluded from ranking as "from" prices."""
         return sum(1 for o in self.offers if o.get("price_is_from"))
 
+    @property
+    def rrp_disagreement(self) -> bool:
+        """True when the retailers disagree about this product's RRP.
+
+        Two retailers selling the same item quote roughly the same
+        recommended price. A wide spread means the titles matched but the
+        products did not: "TOM FORD Noir Eau de Parfum, 100ml" appears at
+        John Lewis with
+        an RRP of 158.00 and at Lookfantastic with an RRP of 320.00, which is
+        a different fragrance sharing a name. The match is still reported --
+        it may be a genuine repricing -- but flagged so a reader does not
+        quote a 132.01 saving that is not real.
+        """
+        rrps = [o["original_price"] for o in self.offers
+                if o.get("original_price") is not None]
+        if len(rrps) >= 2 and max(rrps) > min(rrps) * 1.25:
+            return True
+
+        # Not every product carries an RRP, so fall back to the prices
+        # themselves. Two retailers selling the same item do not differ by
+        # more than about half: a 126.40 / 320.00 pair is two different
+        # fragrances that happen to share most of a name, not a saving.
+        prices = [o["current_price"] for o in self._comparable]
+        if len(prices) >= 2 and max(prices) > min(prices) * 2.0:
+            return True
+        return False
+
     def to_dict(self) -> Dict[str, Any]:
         cheapest = self.cheapest
         return {
@@ -108,6 +136,9 @@ class ProductMatch:
             # Visible so a reader can tell a blank comparison apart from a
             # genuine tie: these offers exist but are not directly comparable.
             "from_price_offers": self.from_price_count,
+            # True when the retailers disagree about the RRP, which usually
+            # means the titles matched but the products did not.
+            "rrp_disagreement": self.rrp_disagreement,
             "offers": self.offers,
         }
 
@@ -155,16 +186,25 @@ def normalize_title(title: str, brand: Optional[str] = None) -> List[str]:
 
 
 def title_similarity(a_tokens: Sequence[str], b_tokens: Sequence[str]) -> float:
-    """Jaccard overlap of two token sets, 0.0 to 1.0.
+    """Jaccard overlap of two token MULTISETS, 0.0 to 1.0.
 
-    Set-based rather than sequence-based on purpose: retailers reorder words
-    ("Cleansing Balm 125ml" vs "125ml Cleansing Balm") far more often than
-    they use genuinely different words.
+    Order is ignored on purpose: retailers reorder words ("Cleansing Balm
+    125ml" vs "125ml Cleansing Balm") far more often than they use genuinely
+    different ones.
+
+    Repetition, however, is not ignored. Comparing plain sets scored
+    "TOM FORD Noir Eau de Parfum" and "TOM FORD Noir De Noir Eau de Parfum"
+    at a perfect 1.00 -- the duplicated "noir" and "de" collapse away, and
+    the two are different fragrances. That match reported John Lewis as
+    193.60 cheaper than Lookfantastic on the same product, which it is not.
+    Counting occurrences keeps the repetition that distinguishes them.
     """
-    a, b = set(a_tokens), set(b_tokens)
+    a, b = Counter(a_tokens), Counter(b_tokens)
     if not a or not b:
         return 0.0
-    return len(a & b) / len(a | b)
+    intersection = sum((a & b).values())
+    union = sum((a | b).values())
+    return intersection / union if union else 0.0
 
 
 def _offer(product: Dict[str, Any]) -> Dict[str, Any]:

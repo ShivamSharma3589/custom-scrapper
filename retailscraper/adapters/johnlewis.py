@@ -45,12 +45,21 @@ from __future__ import annotations
 import base64
 import gzip
 import json
+import unicodedata
 import re
+from dataclasses import replace
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, Iterable, List, Optional, Sequence
+from urllib.parse import unquote
 
-from ..models import SCOPE_PRODUCT, SCOPE_SITEWIDE, Campaign, Product
+from ..models import (
+    SCOPE_PRODUCT,
+    SCOPE_SITEWIDE,
+    SCOPE_UNRESOLVED,
+    Campaign,
+    Product,
+)
 from ..normalize import (
     canonical_url,
     clean_text,
@@ -58,7 +67,11 @@ from ..normalize import (
     parse_price,
     percent_off,
 )
-from ..promotions import classify_promotion, is_confident_offer
+from ..promotions import (
+    classify_promotion,
+    is_browse_facet,
+    is_confident_offer,
+)
 from .base import ListingPage, RetailerAdapter, register
 
 # Product URLs end in /p<id>, optionally after a colour segment:
@@ -114,10 +127,35 @@ async (url) => {
 
 _GRID_INDEX = "https://www.johnlewis.com/sitemap/grids/grids.xml"
 
+#: The A-Z of every brand John Lewis stocks. One request, ~3,956 brand pages.
+_BRAND_INDEX = "https://www.johnlewis.com/brands/all"
+
+#: A brand-page link on that index. The slug accepts percent-encoding because
+#: John Lewis keeps accents in it: Estee Lauder is `est%C3%A9e-lauder`.
+_BRAND_LINK_RE = re.compile(r"/brand/([A-Za-z0-9%-]+)/_/N-(\w+)")
+
+#: John Lewis states the size of a brand listing in its own page state:
+#: `"results":236,"pagesAvailable":10`. Crawl depth is taken from that rather
+#: than from the framework's default, which stopped at four pages of ten.
+_LISTING_SIZE_RE = re.compile(
+    r'"results"\s*:\s*(\d+)\s*,\s*"pagesAvailable"\s*:\s*(\d+)'
+)
+
+#: The Next.js state blob. The per-size prices live here and nowhere in the
+#: rendered page, which shows only "from £24.00".
+_NEXT_DATA_RE = re.compile(
+    r'<script id="__NEXT_DATA__"[^>]*>(.*?)</script>', re.DOTALL
+)
+
 #: How many grid shards to read before giving up on a brand. Shard 0 alone
 #: holds ~1,950 brand pages and covers most of what we look for; the cap stops
 #: an unstocked brand from walking all 199.
 _MAX_GRID_SHARDS = 6
+
+#: John Lewis serves two pages of any listing and 404s the third, whatever
+#: `pagesAvailable` reports. Asking beyond this wastes requests against a
+#: retailer that throttles by returning 404, which looks like an empty shelf.
+_MAX_LISTING_PAGES = 2
 
 
 @register
@@ -127,6 +165,19 @@ class JohnLewisAdapter(RetailerAdapter):
     name = "johnlewis"
     domain = "www.johnlewis.com"
     display_name = "John Lewis"
+
+    # John Lewis rate-limits under sustained load. A seven-brand run had 144
+    # of 348 requests refused with HTTP 403 -- all of them the last two
+    # brands crawled, which then reported zero products for a brand the shop
+    # actually stocks. One request at a time, more slowly, avoids it.
+    #
+    # Kept slightly above the old 2.5s now that a run covers the whole
+    # catalogue rather than four pages per brand. John Lewis answers with
+    # HTTP 404 rather than 429 when it throttles, which is indistinguishable
+    # from a page that does not exist -- so the rate matters more here than
+    # at a retailer whose refusals are honest.
+    crawl_delay = 3.0
+    max_concurrent_requests = 1
 
     # No sitemap route: the shards are gzipped and the browser will not
     # navigate to them. See the module docstring.
@@ -206,13 +257,40 @@ class JohnLewisAdapter(RetailerAdapter):
     def _cache_path(self) -> Path:
         return Path(__file__).resolve().parent.parent.parent / ".jl_brand_codes.json"
 
-    def _load_cached_codes(self) -> Dict[str, str]:
+    def _load_cached_codes(self) -> Dict[str, Dict[str, str]]:
+        """The cache, with entries written by older versions upgraded.
+
+        Entries used to be a bare code string, which assumed the brand's URL
+        slug was our slug. That is false for Estee Lauder, whose page is
+        `/brand/est%C3%A9e-lauder/_/N-1z13yah`, so the slug is now stored
+        alongside the code. An old entry keeps working: its slug is ours.
+        """
         try:
-            return json.loads(self._cache_path.read_text(encoding="utf-8"))
+            raw = json.loads(self._cache_path.read_text(encoding="utf-8"))
         except Exception:
             return {}
+        if not isinstance(raw, dict):
+            return {}
+        upgraded: Dict[str, Dict[str, str]] = {}
+        for key, value in raw.items():
+            if isinstance(value, str):
+                upgraded[key] = {"code": value, "slug": key}
+            elif isinstance(value, dict) and value.get("code"):
+                entry = {
+                    "code": value["code"],
+                    "slug": value.get("slug") or key,
+                }
+                # Anything measured later -- page count, category facets --
+                # is carried through. Whitelisting only code and slug once
+                # silently dropped the facets `prepare` had just written, so
+                # discovery fell back to the brand root's two pages.
+                for extra in ("pages", "facets"):
+                    if value.get(extra):
+                        entry[extra] = value[extra]
+                upgraded[key] = entry
+        return upgraded
 
-    def _save_cached_codes(self, codes: Dict[str, str]) -> None:
+    def _save_cached_codes(self, codes: Dict[str, Dict[str, str]]) -> None:
         try:
             self._cache_path.write_text(
                 json.dumps(codes, indent=2, sort_keys=True), encoding="utf-8"
@@ -228,17 +306,85 @@ class JohnLewisAdapter(RetailerAdapter):
         loop fails. Doing it here also means an unstocked brand is reported
         as a warning instead of silently contributing nothing.
         """
-        codes = self.brand_codes(brands, resolve=True)
-        return [
-            f"no John Lewis brand page found for {brand!r} "
-            f"(searched {_MAX_GRID_SHARDS} sitemap shards) -- it may not be "
-            f"stocked. Continuing without it."
+        pages = self.brand_pages(brands, resolve=True)
+        warnings = [
+            f"no John Lewis brand page found for {brand!r} in the A-Z index "
+            f"-- it may not be stocked. Continuing without it."
             for brand in brands
-            if self._brand_slug(brand) not in codes
+            if self._brand_slug(brand) not in pages
         ]
+        warnings.extend(self._measure_catalogues(brands, pages))
+        return warnings
+
+    def _measure_catalogues(
+        self, brands: Sequence[str], pages: Dict[str, Dict[str, str]]
+    ) -> List[str]:
+        """Ask each brand listing how big it is, and remember the answer.
+
+        John Lewis states both numbers on the listing itself
+        (`"results":236,"pagesAvailable":10`), so the depth to crawl is the
+        retailer's own count rather than a guess. Without this the crawl
+        stopped at the framework's default four pages -- 96 of Clinique's 236
+        products -- and the shortfall was invisible in the output.
+        """
+        from scrapling.fetchers import StealthyFetcher
+
+        notes: List[str] = []
+        dirty = False
+        cache = self._load_cached_codes()
+
+        for brand in brands:
+            slug = self._brand_slug(brand)
+            page = pages.get(slug)
+            if not page or cache.get(slug, {}).get("pages"):
+                continue
+            url = f"https://{self.domain}/brand/{page['slug']}/_/N-{page['code']}"
+            try:
+                response = StealthyFetcher.fetch(
+                    url, headless=True, network_idle=True
+                )
+                html = getattr(response, "html_content", None) or str(response)
+            except Exception:
+                continue
+
+            found = _LISTING_SIZE_RE.search(html)
+            if not found:
+                continue
+            results, available = int(found.group(1)), int(found.group(2))
+            entry = cache.setdefault(slug, dict(page))
+            entry["pages"] = available
+            entry["facets"] = self._category_facets(html)
+            dirty = True
+
+            reachable = sum(
+                min(int(f["qty"]), _MAX_LISTING_PAGES * self.listing_page_size)
+                for f in entry["facets"]
+            ) or min(results, _MAX_LISTING_PAGES * self.listing_page_size)
+            notes.append(
+                f"John Lewis lists {results} {brand} products; "
+                f"crawling {len(entry['facets'])} category facets reaches "
+                f"about {min(reachable, results)}"
+            )
+
+        if dirty:
+            self._save_cached_codes(cache)
+        return notes
 
     def brand_codes(self, brands: Sequence[str], resolve: bool = False) -> Dict[str, str]:
-        """Map each requested brand to its John Lewis brand-page code.
+        """Just the page codes, for callers that do not need the slug."""
+        return {
+            slug: page["code"]
+            for slug, page in self.brand_pages(brands, resolve=resolve).items()
+        }
+
+    def brand_pages(
+        self, brands: Sequence[str], resolve: bool = False
+    ) -> Dict[str, Dict[str, str]]:
+        """Map each requested brand to its John Lewis brand page.
+
+        Each value holds the page `code` and the `slug` John Lewis itself
+        uses, which is not always the slug we would build: Estee Lauder's
+        page keeps its accent, percent-encoded.
 
         `resolve` controls whether a cache miss is allowed to hit the network.
         It defaults to False so that callers running inside the crawler never
@@ -258,19 +404,66 @@ class JohnLewisAdapter(RetailerAdapter):
         if resolve:
             missing = wanted - set(cached)
             if missing:
-                found = self._scan_grid_sitemaps(missing)
+                found = self._read_brand_index(missing)
+                if not found:
+                    # The A-Z page is the whole index in one request. Only
+                    # fall back to walking gzipped sitemap shards if it fails.
+                    found = self._scan_grid_sitemaps(missing)
                 if found:
                     cached.update(found)
                     self._save_cached_codes(cached)
 
-        return {slug: cached[slug] for slug in wanted if slug in cached}
+        return {slug: dict(cached[slug]) for slug in wanted if slug in cached}
 
-    def _scan_grid_sitemaps(self, wanted: Iterable[str]) -> Dict[str, str]:
+    def _read_brand_index(self, wanted: Iterable[str]) -> Dict[str, Dict[str, str]]:
+        """Resolve brand pages from John Lewis's A-Z index.
+
+        One request returns every brand John Lewis stocks -- 3,956 of them --
+        which replaced walking the gzipped grid sitemaps six shards at a time.
+        That scan missed Estee Lauder twice over: its page is in a shard past
+        the sixth of 199, and its slug is percent-encoded, which the shard
+        scanner's pattern could not match. The brand reported zero products
+        and zero requests, and read as "John Lewis does not stock it".
+        """
+        from scrapling.fetchers import StealthyFetcher
+
+        wanted = set(wanted)
+        try:
+            response = StealthyFetcher.fetch(
+                _BRAND_INDEX, headless=True, network_idle=True
+            )
+            html = getattr(response, "html_content", None) or str(response)
+        except Exception:
+            # Not fatal: the caller falls back to the sitemap scan.
+            return {}
+
+        found: Dict[str, Dict[str, str]] = {}
+        for slug, code in _BRAND_LINK_RE.findall(html):
+            key = self._fold_slug(slug)
+            if key in wanted:
+                found[key] = {"code": code, "slug": slug}
+        return found
+
+    @staticmethod
+    def _fold_slug(slug: str) -> str:
+        """A site slug reduced to the form `_brand_slug` produces.
+
+        `est%C3%A9e-lauder` decodes to `estée-lauder`, which folds to
+        `estee-lauder` -- the slug the caller asked for.
+        """
+        decoded = unquote(slug)
+        stripped = "".join(
+            ch for ch in unicodedata.normalize("NFKD", decoded)
+            if not unicodedata.combining(ch)
+        )
+        return stripped.lower()
+
+    def _scan_grid_sitemaps(self, wanted: Iterable[str]) -> Dict[str, Dict[str, str]]:
         """Walk the gzipped grid sitemaps for the brand pages we still need."""
         from scrapling.fetchers import StealthySession
 
         wanted = set(wanted)
-        found: Dict[str, str] = {}
+        found: Dict[str, Dict[str, str]] = {}
         box: Dict[str, str] = {}
 
         def action_for(url):
@@ -308,7 +501,9 @@ class JohnLewisAdapter(RetailerAdapter):
                     for url in re.findall(r"<loc>([^<]+)</loc>", xml):
                         match = _BRAND_PAGE_RE.match(url)
                         if match and match.group(1) in wanted:
-                            found[match.group(1)] = match.group(2)
+                            found[match.group(1)] = {
+                                "code": match.group(2), "slug": match.group(1),
+                            }
                     if wanted <= set(found):
                         break
         except Exception as exc:
@@ -334,18 +529,47 @@ class JohnLewisAdapter(RetailerAdapter):
         a different listing. That keeps one product page as the single source
         of that fact.
         """
-        slug = self._brand_slug(brand)
-        code = self.brand_codes([brand]).get(slug)
-        if not code:
+        page = self.brand_pages([brand]).get(self._brand_slug(brand))
+        if not page:
             return []
 
-        base = f"https://{self.domain}/brand/{slug}/_/N-{code}"
-        pages = [ListingPage(url=base, brand=brand, category=None)]
-        pages.extend(
-            ListingPage(url=f"{base}?page={index}", brand=brand, category=None)
-            for index in range(2, max_pages + 1)
-        )
-        return pages
+        # The brand page serves two pages and no more, whatever `pagesAvailable`
+        # claims, so depth alone cannot reach the catalogue. `prepare` records
+        # John Lewis's own Category facets, whose counts partition it exactly;
+        # each is crawled as its own listing and carries the category with it.
+        facets = page.get("facets") or []
+        depth = min(max(max_pages, 1), _MAX_LISTING_PAGES)
+
+        # John Lewis's own slug, not ours: Estee Lauder's page is
+        # /brand/est%C3%A9e-lauder/, and /brand/estee-lauder/ is a 404.
+        base = f"https://{self.domain}/brand/{page['slug']}/_/N-{page['code']}"
+
+        listings: List[ListingPage] = []
+
+        def add(url: str, category: Optional[str], count: int) -> None:
+            listings.append(ListingPage(url=url, brand=brand, category=category))
+            # Only ask for pages that can hold something.
+            needed = -(-count // self.listing_page_size) if count else depth
+            for index in range(2, min(max(needed, 1), depth) + 1):
+                listings.append(ListingPage(
+                    url=f"{url}?page={index}", brand=brand, category=category
+                ))
+
+        # The brand root first: it is the only listing when facets are
+        # unknown, and its first pages are the most-promoted products.
+        add(base, None, depth * self.listing_page_size)
+
+        for facet in facets:
+            url = facet.get("url") or ""
+            if not url.startswith("/"):
+                continue
+            try:
+                count = int(facet.get("qty") or 0)
+            except (TypeError, ValueError):
+                count = 0
+            add(f"https://{self.domain}{url}", facet.get("label"), count)
+
+        return listings
 
     def campaign_seed_urls(self, brands: Sequence[str]) -> List[str]:
         """None -- the brand listing already carries the campaigns.
@@ -436,6 +660,233 @@ class JohnLewisAdapter(RetailerAdapter):
 
     # --- extraction -------------------------------------------------------
 
+    def extract_product_variants(
+        self, response, target_brands: Sequence[str] = ()
+    ) -> List[Product]:
+        """One record per size, when John Lewis prices the sizes separately.
+
+        The page state carries each size with its own price, stock code,
+        availability and URL -- Dramatically Different Moisturising Lotion is
+        50ml/125ml/200ml at 24.00/30.40/39.75 -- while the page itself shows
+        only "from £24.00". Fifty-six products in a seven-brand run were
+        recorded at a from-price, which is excluded from ranking, so John
+        Lewis was absent from the comparison for every one of them.
+
+        Everything except the size, price and stock code is inherited from
+        the page's own product record, so the brand is still proved from the
+        JSON-LD exactly as it is for a single-size product.
+        """
+        sizes = self._size_variants(response)
+        if len(sizes) < 2:
+            return []
+
+        base = self.extract_product(response, target_brands)
+        if base is None:
+            return []
+
+        products: List[Product] = []
+        for variant in sizes:
+            price = variant.get("price") or {}
+            current = self._decimal(price.get("value"))
+            if current is None:
+                continue
+
+            # `reductionHistory` is newest-first by `chronology`, so entry 0
+            # is the price this one replaced.
+            history = [
+                h for h in (price.get("reductionHistory") or [])
+                if isinstance(h, dict)
+            ]
+            history.sort(key=lambda h: h.get("chronology", 0))
+            original = self._decimal(history[0].get("value")) if history else None
+            if original is not None and original <= current:
+                original = None
+
+            path = (variant.get("pdpURL") or {}).get("url") or ""
+            # Per-size, because the saving differs by size: the 50ml is
+            # "Price matched: save £19" and the 100ml "save £25.60".
+            variant_promo = " | ".join(
+                self._promotional_titles(variant.get("messaging"))
+            )
+            available = (variant.get("availability") or {}).get("availableToOrder")
+
+            products.append(replace(
+                base,
+                product_title=clean_text(variant.get("title")) or base.product_title,
+                # Each size is a distinct purchasable item with its own
+                # John Lewis stock code, so it gets its own id rather than
+                # sharing the page's -- otherwise all three deduplicate to one.
+                product_id=clean_text(variant.get("displayCode")) or base.product_id,
+                sku=clean_text(variant.get("displayCode")),
+                sku_matches_product_id=True,
+                product_url=(
+                    canonical_url(f"https://{self.domain}{path}")
+                    if path else base.product_url
+                ),
+                current_price=current,
+                original_price=original,
+                discount_amount=(
+                    round(original - current, 2) if original is not None else None
+                ),
+                discount_percent=percent_off(original, current),
+                # A specific size has a specific price. That is the whole
+                # point of splitting them out.
+                price_is_from=False,
+                variant_count=1,
+                promotional_copy=variant_promo or base.promotional_copy,
+                availability=(
+                    "InStock" if available
+                    else "OutOfStock" if available is not None
+                    else base.availability
+                ),
+            ))
+
+        return products if len(products) >= 2 else []
+
+    @staticmethod
+    def _size_variants(response) -> List[Dict[str, Any]]:
+        """The page's variants, but only when they differ by SIZE.
+
+        Shades are deliberately excluded: every other retailer lists a
+        multi-shade product once, so expanding shades here would both inflate
+        John Lewis's catalogue and stop those products matching anywhere else.
+        """
+        body = getattr(response, "html_content", None) or getattr(response, "body", None)
+        if isinstance(body, bytes):
+            body = body.decode("utf-8", "replace")
+        match = _NEXT_DATA_RE.search(body or "")
+        if not match:
+            return []
+        try:
+            data = json.loads(match.group(1))
+        except (ValueError, TypeError):
+            return []
+
+        product = (
+            data.get("props", {}).get("pageProps", {}).get("product")
+            if isinstance(data, dict) else None
+        )
+        variants = product.get("variants") if isinstance(product, dict) else None
+        if not isinstance(variants, list):
+            return []
+
+        sized = [
+            v for v in variants
+            if isinstance(v, dict)
+            and (v.get("differentiators") or {}).get("size")
+            and not (v.get("differentiators") or {}).get("colour")
+        ]
+        # Distinct sizes only. One size repeated is one product.
+        seen = {(v.get("differentiators") or {}).get("size") for v in sized}
+        return sized if len(seen) == len(sized) else []
+
+    @staticmethod
+    def _category_facets(html: str) -> List[Dict[str, str]]:
+        """John Lewis's own category breakdown of a brand listing.
+
+        The brand page itself only serves two pages -- 48 products -- however
+        many it says are available, and `?page=3` is a 404. What it does
+        publish is a Category facet whose counts partition the catalogue
+        exactly: Jo Malone's twenty facets sum to 292, its stated total. Each
+        facet is its own listing, so crawling them reaches the products the
+        brand page will not hand over, and tags each one with the category
+        John Lewis filed it under.
+        """
+        match = _NEXT_DATA_RE.search(html or "")
+        if not match:
+            return []
+        try:
+            data = json.loads(match.group(1))
+        except (ValueError, TypeError):
+            return []
+
+        listing = (
+            data.get("props", {}).get("pageProps", {})
+                .get("productListingData", {})
+        )
+        facets: List[Dict[str, str]] = []
+        for group in listing.get("facets") or []:
+            if not isinstance(group, dict) or group.get("name") != "Category":
+                continue
+            for detail in group.get("details") or []:
+                url = detail.get("facetUrl")
+                label = clean_text(detail.get("label"))
+                if not url or not label:
+                    continue
+                facets.append({
+                    "url": url,
+                    "label": label,
+                    "qty": str(detail.get("qty") or 0),
+                })
+        return facets
+
+    @classmethod
+    def _page_state(cls, response) -> Dict[str, Any]:
+        """The page's `__NEXT_DATA__`, or an empty dict."""
+        body = getattr(response, "html_content", None) or getattr(response, "body", None)
+        if isinstance(body, bytes):
+            body = body.decode("utf-8", "replace")
+        match = _NEXT_DATA_RE.search(body or "")
+        if not match:
+            return {}
+        try:
+            data = json.loads(match.group(1))
+        except (ValueError, TypeError):
+            return {}
+        return data if isinstance(data, dict) else {}
+
+    @staticmethod
+    def _promotional_titles(messaging: Any) -> List[str]:
+        """The promotional entries in a John Lewis `messaging` list.
+
+        Entries are typed by John Lewis: `"type": "promotional"` marks an
+        offer, and other types carry delivery and stock notes that are not
+        promotions.
+        """
+        titles: List[str] = []
+        for entry in messaging or []:
+            if not isinstance(entry, dict) or entry.get("type") != "promotional":
+                continue
+            text = clean_text(entry.get("title"))
+            if text and text not in titles:
+                titles.append(text)
+        return titles
+
+    @classmethod
+    def _stated_promotions(cls, response) -> List[str]:
+        """Every promotion John Lewis states on this page, product or listing."""
+        props = cls._page_state(response).get("props", {})
+        page = props.get("pageProps", {}) if isinstance(props, dict) else {}
+        if not isinstance(page, dict):
+            return []
+
+        found: List[str] = []
+        product = page.get("product")
+        if isinstance(product, dict):
+            found.extend(cls._promotional_titles(product.get("messaging")))
+            for variant in product.get("variants") or []:
+                if isinstance(variant, dict):
+                    found.extend(cls._promotional_titles(variant.get("messaging")))
+
+        listing = page.get("productListingData")
+        if isinstance(listing, dict):
+            for item in listing.get("products") or []:
+                if isinstance(item, dict):
+                    found.extend(cls._promotional_titles(item.get("messaging")))
+
+        ordered: List[str] = []
+        for text in found:
+            if text not in ordered:
+                ordered.append(text)
+        return ordered
+
+    @staticmethod
+    def _decimal(value: Any) -> Optional[float]:
+        try:
+            return round(float(value), 2)
+        except (TypeError, ValueError):
+            return None
+
     def extract_product(
         self, response, target_brands: Sequence[str] = ()
     ) -> Optional[Product]:
@@ -476,7 +927,16 @@ class JohnLewisAdapter(RetailerAdapter):
 
         availability = (offers.get("availability") or "").rsplit("/", 1)[-1] or None
 
-        promo = self._page_offer_text(response)
+        # John Lewis states its own promotions in the page data, typed
+        # `"type": "promotional"`. A badge with no number ("Price matched")
+        # never passed the keyword test that read the rendered page, so most
+        # promoted products recorded no promotional copy at all.
+        stated = self._promotional_titles(
+            (self._page_state(response)
+             .get("props", {}).get("pageProps", {}).get("product") or {})
+            .get("messaging")
+        )
+        promo = " | ".join(stated) or self._page_offer_text(response)
 
         return Product(
             retailer=self.display_name,
@@ -578,6 +1038,22 @@ class JohnLewisAdapter(RetailerAdapter):
                 return text
         return None
 
+    def campaign_discovery_urls(self) -> List[str]:
+        """John Lewis's offers browse page and its offers content hub.
+
+        Its promotions are otherwise stated per product ("Price matched:
+        save 15%"), which a campaigns-only run never reaches because it
+        fetches no products.
+        """
+        return [
+        "https://www.johnlewis.com/browse/offers/_/N-7ofb",
+        "https://www.johnlewis.com/content/offers",
+        ]
+
+    def extract_campaign_directory(self, response) -> List[Campaign]:
+        """Every offer linked from a hub page, via the shared scan."""
+        return self._scan_offer_links(response)
+
     def extract_campaigns(self, response) -> List[Campaign]:
         """Promotions stated on this page.
 
@@ -595,9 +1071,47 @@ class JohnLewisAdapter(RetailerAdapter):
 
         on_product = self.is_product_url(url)
 
+        # John Lewis labels its own promotions in the page state, typed
+        # `"type": "promotional"`. Taking them from there rather than from the
+        # rendered text means the retailer decides what counts as a promotion
+        # instead of a keyword test guessing: "Price matched" names no
+        # percentage or amount, so `is_confident_offer` rejected it, and 17 of
+        # 24 Clinique products carrying that badge recorded no campaign at all
+        # while Tom Ford's quantified "Price matched: save 15%" came through.
+        #
+        # Off a product page these are UNRESOLVED, never site-wide. They are
+        # read from each tile's own `messaging` on a brand listing, so they
+        # describe individual products -- "Price matched: save £58" is one
+        # item's saving. Calling that site-wide attaches it to every product
+        # in the run, which is how all 770 John Lewis records came to carry
+        # seventeen promotions that belonged to a handful of them.
+        for text in self._stated_promotions(response):
+            if text in seen:
+                continue
+            seen.add(text)
+            campaigns.append(
+                Campaign(
+                    retailer=self.display_name,
+                    promotion_text=text,
+                    promotion_type=classify_promotion(text),
+                    scope=SCOPE_PRODUCT if on_product else SCOPE_UNRESOLVED,
+                    scope_value=None,
+                    promo_code=extract_promo_code(text),
+                    source_url=canonical_url(url),
+                    landing_url=None,
+                )
+            )
+
         for node in response.css("[data-testid='promotion'], [class*='Promotion'], [class*='offer']"):
             text = clean_text(node.get_all_text())
             if not text or text in seen or not is_confident_offer(text):
+                continue
+            # A bare discount tier ("Save 12%") is a shop-by-saving filter
+            # or a per-card badge, not a campaign. Recorded as one -- and
+            # these scans have no scope to give it but site-wide -- it
+            # attaches to every product found, which is how a product
+            # discounted 29% came to carry "At Least 70% Off".
+            if is_browse_facet(text, url):
                 continue
             if len(text) > 160:  # a container, not a promotion label
                 continue

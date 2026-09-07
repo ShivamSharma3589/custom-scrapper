@@ -92,6 +92,17 @@ class RetailPromotionSpider(SitemapSpider):
         self.sitemap_urls = [] if campaigns_only else list(adapter.sitemap_urls)
         self.allowed_domains = {adapter.domain}
 
+        # A retailer that refuses requests under load can ask for a gentler
+        # crawl. Set before super().__init__() so the engine picks it up.
+        if adapter.crawl_delay is not None:
+            self.download_delay = adapter.crawl_delay
+            self.autothrottle_start_delay = max(
+                self.autothrottle_start_delay, adapter.crawl_delay
+            )
+        if adapter.max_concurrent_requests is not None:
+            self.concurrent_requests = adapter.max_concurrent_requests
+            self.concurrent_requests_per_domain = adapter.max_concurrent_requests
+
         if cache_dir:
             self.development_mode = True
             self.development_cache_dir = cache_dir
@@ -106,6 +117,13 @@ class RetailPromotionSpider(SitemapSpider):
         # parsed before the listing that files it -- ordering the two would
         # mean serialising the crawl for no benefit.
         self.category_index: Dict[str, str] = {}
+
+        # Requests the retailer refused, per brand. Without this, a brand
+        # whose every request was rate-limited is indistinguishable in the
+        # summary from one the retailer genuinely does not stock -- John
+        # Lewis blocked all 96 Too Faced requests and the run reported "may
+        # not be stocked", which is a wrong business conclusion.
+        self.blocked_by_brand: Dict[str, int] = {}
 
         self._dispatched = 0
         self._dispatched_by_brand: Dict[str, int] = {}
@@ -294,6 +312,19 @@ class RetailPromotionSpider(SitemapSpider):
         self._dispatched += 1
         return request
 
+    async def is_blocked(self, response) -> bool:
+        """Note which brand a refused request belonged to, then defer.
+
+        The crawler already retries and backs off; this only records the
+        attribution so the run summary can tell "blocked" apart from "not
+        stocked".
+        """
+        blocked = await super().is_blocked(response)
+        if blocked:
+            brand = self._brand_for_url(str(response.url))
+            self.blocked_by_brand[brand] = self.blocked_by_brand.get(brand, 0) + 1
+        return blocked
+
     def _brand_for_url(self, url: str) -> str:
         """Which requested brand a candidate URL appears to belong to.
 
@@ -451,12 +482,26 @@ class RetailPromotionSpider(SitemapSpider):
         for campaign in self.adapter.extract_campaigns(response):
             self._record_campaign(campaign)
 
+        # Some pages sell several sizes at different prices behind one URL.
+        # Where the adapter can read them, each size is its own record: the
+        # alternative is a single "from" price that is not the price of any
+        # specific item and cannot be compared with another retailer's.
+        meta = response.meta or {}
+        variants = self.adapter.extract_product_variants(response, self.brands)
+        if variants:
+            self.logger.info(
+                f"{len(variants)} size(s) read from {response.url}"
+            )
+            for variant in variants:
+                self._accept_product(variant, meta)
+            return
+
         product = self.adapter.extract_product(response, self.brands)
         if product is None:
             self.logger.debug(f"Not a product page: {response.url}")
             return
 
-        self._accept_product(product, response.meta or {})
+        self._accept_product(product, meta)
         return
         yield  # pragma: no cover
 

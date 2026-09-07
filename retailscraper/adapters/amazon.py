@@ -4,10 +4,20 @@ The crawl works. The data does not — from a non-UK IP — and that distinction
 is the whole point of this adapter's design.
 
 **Amazon prices by the visitor's location, not by the domain.** Requesting
-amazon.co.uk from outside the UK returns international pricing: this adapter
-was developed from India and every price came back as `INR 4,239.84`. Setting
-`locale="en-GB"`, `Accept-Language: en-GB`, the `i18n-prefs=GBP` cookie and
-`?language=en_GB` does not change it; Amazon geolocates by IP.
+amazon.co.uk from outside the UK returned international pricing: this adapter
+was developed from India and every price came back as `INR 4,239.84`.
+
+`i18n-prefs=GBP` -- Amazon's own currency preference, the cookie its currency
+selector sets -- fixes the currency, and the search page went from zero pound
+signs to 507 of them. It has to be set as a real browser cookie: this adapter
+passed it in `extra_headers` as `Cookie:` for months and it did nothing,
+because the browser context keeps its own cookie jar and overrides the
+header. Every run therefore saw local pricing, refused every record on the
+guard below, and read as "Amazon stocks none of these brands".
+
+Currency is not catalogue. Amazon still varies which offers it shows by
+region, so a UK proxy is still what makes the data match what a UK shopper
+sees. The guard stays either way.
 
 Those are real numbers, correctly extracted, and completely wrong for a UK
 pricing report — the exact "confident nonsense" failure this project exists
@@ -45,7 +55,11 @@ from typing import Iterable, List, Optional, Sequence
 
 from ..models import SCOPE_PRODUCT, SCOPE_SITEWIDE, Campaign, Product
 from ..normalize import canonical_url, clean_text, extract_promo_code, percent_off
-from ..promotions import classify_promotion, is_confident_offer
+from ..promotions import (
+    classify_promotion,
+    is_browse_facet,
+    is_confident_offer,
+)
 from .base import ListingPage, RetailerAdapter, register
 
 _PRODUCT_URL_RE = re.compile(
@@ -90,12 +104,23 @@ class AmazonAdapter(RetailerAdapter):
         self.currencies_seen: set = set()
 
     def configure_session(self, manager) -> None:
-        """A stealth browser, asking for the UK in every way available.
+        """A stealth browser asking Amazon for sterling.
 
-        None of this overrides IP geolocation -- see the module docstring --
-        but it costs nothing and is correct when the IP is right. Add
-        `proxy="http://user:pass@uk-endpoint:port"` here to make the data
-        usable from outside the UK.
+        `i18n-prefs` is Amazon's own currency preference, the cookie its
+        currency selector sets. With it, amazon.co.uk quotes GBP even when
+        the request comes from outside the UK -- the search page went from
+        zero pound signs to 507 of them.
+
+        It has to be a real browser cookie, not a `Cookie:` header. This
+        adapter passed one in `extra_headers` for months and it did nothing:
+        the browser context keeps its own cookie jar and overrides the
+        header, so every run saw local pricing and refused every record,
+        which read as "Amazon stocks none of these brands".
+
+        Currency is not the same as catalogue. Amazon still varies which
+        offers it shows by region, so a UK proxy remains the way to see what
+        a UK shopper sees; add `proxy="http://user:pass@endpoint:port"` here.
+        The currency guard in `extract_product` stays either way.
         """
         from scrapling.fetchers import AsyncStealthySession
 
@@ -108,9 +133,14 @@ class AmazonAdapter(RetailerAdapter):
                 timeout=120_000,
                 max_pages=2,
                 locale="en-GB",
+                cookies=[
+                    {"name": "i18n-prefs", "value": "GBP",
+                     "domain": ".amazon.co.uk", "path": "/"},
+                    {"name": "lc-acbuk", "value": "en_GB",
+                     "domain": ".amazon.co.uk", "path": "/"},
+                ],
                 extra_headers={
                     "Accept-Language": "en-GB,en;q=0.9",
-                    "Cookie": "i18n-prefs=GBP; lc-acbuk=en_GB",
                 },
             ),
         )
@@ -283,6 +313,18 @@ class AmazonAdapter(RetailerAdapter):
         """Not used: products come from search cards, not product pages."""
         return None
 
+    def campaign_discovery_urls(self) -> List[str]:
+        """Amazon's deals page. Permitted by robots.txt, unlike `/s?k=`
+        search which it disallows for some agents.
+        """
+        return [
+        "https://www.amazon.co.uk/deals",
+        ]
+
+    def extract_campaign_directory(self, response) -> List[Campaign]:
+        """Every offer linked from a hub page, via the shared scan."""
+        return self._scan_offer_links(response)
+
     def extract_campaigns(self, response) -> List[Campaign]:
         """Deal badges and promotional copy on a search or product page."""
         url = str(response.url)
@@ -295,6 +337,13 @@ class AmazonAdapter(RetailerAdapter):
             if not text or text in seen or len(text) > 160:
                 continue
             if not is_confident_offer(text):
+                continue
+            # A bare discount tier ("Save 12%") is a shop-by-saving filter
+            # or a per-card badge, not a campaign. Recorded as one -- and
+            # these scans have no scope to give it but site-wide -- it
+            # attaches to every product found, which is how a product
+            # discounted 29% came to carry "At Least 70% Off".
+            if is_browse_facet(text, url):
                 continue
             seen.add(text)
             campaigns.append(Campaign(

@@ -21,6 +21,7 @@ from retailscraper.models import (  # noqa: E402
 )
 from retailscraper.promotions import (  # noqa: E402
     classify_promotion,
+    is_browse_facet,
     is_confident_offer,
 )
 
@@ -134,7 +135,7 @@ def run() -> int:
 
     print("\n=== extracting a whole hub page ===")
     for name, adapter, url, least in [
-        ("lookfantastic", lf, "https://www.lookfantastic.com/c/health-beauty/offers/view-all/", 8),
+        ("lookfantastic", lf, "https://www.lookfantastic.com/c/health-beauty/offers/view-all/", 5),
         ("boots", boots, "https://www.boots.com/offers", 20),
     ]:
         fixture = FIXTURES / f"{name}_offers.html"
@@ -161,6 +162,13 @@ def run() -> int:
         check(f"{name}: no navigation leaked in",
               any(c.promotion_text.lower() in {"gift finder", "shop all", "new in"}
                   for c in campaigns), False)
+        # A bare discount tier ("At Least 30% Off" -> /offers-save-30) is a
+        # shop-by-saving filter, not a campaign. Recording them made every
+        # site-wide campaign attach to every product, so a product discounted
+        # 29% carried "At Least 70% Off" alongside seven other tiers.
+        tiers = [c.promotion_text for c in campaigns
+                 if is_browse_facet(c.promotion_text, c.landing_url)]
+        check(f"{name}: no shop-by-saving tiers recorded", tiers, [])
 
     print("\n=== Boots declares a warmup, Lookfantastic does not ===")
     check("boots warmup is its homepage", boots.warmup_url(), "https://www.boots.com/")

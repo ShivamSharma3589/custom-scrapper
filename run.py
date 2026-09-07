@@ -315,9 +315,25 @@ def main(argv=None) -> int:
                           f"{adapter.display_name} stocks {did_you_mean!r}. "
                           f"Re-run with that spelling.")
 
-            print(f"\n  NOTE: {', '.join(empty)} returned no products at "
-                  f"{adapter.display_name}. That may mean the retailer does not "
-                  f"stock the brand, not that it has no promotions.")
+            # A brand whose requests were refused is NOT evidence of anything
+            # about stock. Saying "may not be stocked" there turns a rate
+            # limit into a false business conclusion: John Lewis blocked all
+            # 96 Too Faced requests and the run reported it as possibly
+            # unstocked, when John Lewis stocks it.
+            blocked = getattr(spider, "blocked_by_brand", {}) or {}
+            throttled = [b for b in empty if blocked.get(b)]
+            genuinely_empty = [b for b in empty if not blocked.get(b)]
+
+            for brand in throttled:
+                print(f"\n  BLOCKED: {brand} returned no products because "
+                      f"{adapter.display_name} refused {blocked[brand]} request(s). "
+                      f"This says nothing about whether the brand is stocked -- "
+                      f"re-run it on its own, or more slowly.")
+
+            if genuinely_empty:
+                print(f"\n  NOTE: {', '.join(genuinely_empty)} returned no products at "
+                      f"{adapter.display_name}. That may mean the retailer does not "
+                      f"stock the brand, not that it has no promotions.")
 
     print(f"  products accepted : {run_stats['product_records']}")
     print(f"  campaigns found   : {run_stats['campaign_records']}")

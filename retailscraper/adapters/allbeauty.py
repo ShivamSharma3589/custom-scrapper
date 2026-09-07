@@ -42,7 +42,11 @@ from typing import Any, Dict, Iterable, List, Optional, Sequence
 
 from ..models import SCOPE_SITEWIDE, Campaign, Product
 from ..normalize import canonical_url, clean_text, extract_promo_code
-from ..promotions import classify_promotion, is_confident_offer
+from ..promotions import (
+    classify_promotion,
+    is_browse_facet,
+    is_confident_offer,
+)
 from .base import ListingPage, RetailerAdapter, register
 
 # Product pages are /products/<handle>; the numeric id lives in the JSON.
@@ -340,6 +344,13 @@ class AllBeautyAdapter(RetailerAdapter):
             if not text or text in seen or len(text) > 160:
                 continue
             if not is_confident_offer(text):
+                continue
+            # A bare discount tier ("Save 12%") is a shop-by-saving filter
+            # or a per-card badge, not a campaign. Recorded as one -- and
+            # these scans have no scope to give it but site-wide -- it
+            # attaches to every product found, which is how a product
+            # discounted 29% came to carry "At Least 70% Off".
+            if is_browse_facet(text, url):
                 continue
             seen.add(text)
             campaigns.append(
