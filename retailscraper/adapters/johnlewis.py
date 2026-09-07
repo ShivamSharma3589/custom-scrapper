@@ -188,6 +188,11 @@ class JohnLewisAdapter(RetailerAdapter):
     # no separate listing lookup is needed, unlike the other two retailers.
     supports_categories = True
 
+    # prepare() resolves this retailer's brand page for each brand and
+    # warns about the ones it cannot find, so an empty brand that DID
+    # resolve is a fault rather than an absence.
+    confirms_brand_stocking = True
+
     #: Products per brand listing page, as John Lewis renders them.
     listing_page_size = 24
 

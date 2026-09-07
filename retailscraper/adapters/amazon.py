@@ -52,6 +52,7 @@ from __future__ import annotations
 import re
 from datetime import datetime, timezone
 from typing import Iterable, List, Optional, Sequence
+from urllib.parse import quote
 
 from ..models import SCOPE_PRODUCT, SCOPE_SITEWIDE, Campaign, Product
 from ..normalize import canonical_url, clean_text, extract_promo_code, percent_off
@@ -71,6 +72,9 @@ _PRODUCT_URL_RE = re.compile(
 _SYMBOLS = {"£": "GBP", "GBP": "GBP", "$": "USD", "€": "EUR", "INR": "INR", "₹": "INR"}
 
 _AMOUNT_RE = re.compile(r"([\d][\d,]*(?:\.\d{1,2})?)")
+
+#: A card with no buy box: Amazon shows only third-party offers for it.
+_NO_BUY_BOX_RE = re.compile(r"no featured offers? available", re.IGNORECASE)
 
 
 @register
@@ -101,6 +105,9 @@ class AmazonAdapter(RetailerAdapter):
         self.wrong_currency_seen = 0
         # Sponsored placements carry the ad label where the brand belongs.
         self.sponsored_skipped = 0
+        # Products Amazon lists but does not itself offer: only marketplace
+        # sellers have them, so there is no comparable price.
+        self.no_buy_box_skipped = 0
         self.currencies_seen: set = set()
 
     def configure_session(self, manager) -> None:
@@ -154,16 +161,32 @@ class AmazonAdapter(RetailerAdapter):
     def product_listing_urls(
         self, brand: str, categories: Sequence[str], max_pages: int
     ) -> List[ListingPage]:
-        """Paginated beauty search for one brand.
+        """Beauty search for one brand, asking Amazon to filter to it.
 
-        `i=beauty` scopes the search to the beauty department, which keeps a
-        query like "MAC" from returning laptops.
+        `i=beauty` scopes to the beauty department, which keeps a query like
+        "MAC" from returning laptops. `rh=p_89:<brand>` is Amazon's own brand
+        facet, and where it applies it makes the result far cleaner: a plain
+        search for "Clinique" returned 16 Clinique products among 44 cards on
+        page one and then drifted entirely off-brand -- page two was Medik8,
+        Liz Earle and e.l.f. -- while the faceted search returned 16 cards,
+        all of them Clinique.
+
+        **Amazon applies the facet only when it recognises the value, and
+        says nothing when it does not.** Asking for "Estee Lauder" returns 20
+        cards of which 6 are the brand, and the accented spelling behaves
+        identically, so this is the facet being dropped rather than a
+        spelling mismatch. Those runs fall back to plain-search behaviour and
+        the brand check below is what keeps them honest -- which is why that
+        check stays regardless of the facet, and why per-brand counts vary so
+        widely (143 Tom Ford, 2 Estee Lauder in one sweep).
         """
         query = re.sub(r"\s+", "+", brand.strip())
+        facet = quote(brand.strip())
         return [
             ListingPage(
                 url=(
                     f"https://{self.domain}/s?k={query}&i=beauty"
+                    f"&rh=p_89%3A{facet}"
                     f"&language=en_GB&page={page}"
                 ),
                 brand=brand,
@@ -234,6 +257,16 @@ class AmazonAdapter(RetailerAdapter):
             current, currency = self._price(card, ".a-price .a-offscreen")
             was, was_currency = self._price(card, ".a-text-price .a-offscreen")
             if current is None:
+                # Half of Amazon's Clinique cards have no price node at all:
+                # they read "No featured offers available" and then a figure
+                # from a marketplace seller. That number is the cheapest
+                # third-party offer, not the buy-box price a shopper is
+                # shown, and mixing the two would compare different things.
+                # The card is skipped, as documented -- but counted, because
+                # eight silently-dropped products look identical to a brand
+                # Amazon does not stock.
+                if _NO_BUY_BOX_RE.search(card.get_all_text() or ""):
+                    self.no_buy_box_skipped += 1
                 continue
 
             # THE GUARD. A price in the wrong currency is not a UK price, and

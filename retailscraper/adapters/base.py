@@ -59,6 +59,22 @@ class RetailerAdapter(ABC):
     #: while looking like it worked.
     supports_categories: bool = False
 
+    #: True when `prepare()` positively establishes whether this retailer
+    #: stocks each requested brand -- by resolving a brand page or code, and
+    #: warning about the ones it cannot find.
+    #:
+    #: This decides whether an empty brand is a fault. Where it is True, a
+    #: brand that resolved and then returned nothing means something broke:
+    #: John Lewis returned zero Estee Lauder products for weeks because its
+    #: brand code never resolved, and a silent zero is indistinguishable from
+    #: a brand the shop does not carry.
+    #:
+    #: Where it is False an empty brand is simply unknown, and treating it as
+    #: a fault fails good runs -- ASOS stocks neither Jo Malone nor Tom Ford,
+    #: and a 775-product run was reported as failed over two brands it was
+    #: never going to have.
+    confirms_brand_stocking: bool = False
+
     #: Session id used for listing pages. Some retailers render their product
     #: grid with JavaScript and need a browser for listings while their
     #: product pages remain fine over plain HTTP -- paying for a browser only

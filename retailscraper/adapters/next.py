@@ -116,6 +116,11 @@ class NextAdapter(RetailerAdapter):
     # `--categories` filter cannot be honoured faithfully.
     supports_categories = False
 
+    # prepare() resolves this retailer's brand page for each brand and
+    # warns about the ones it cannot find, so an empty brand that DID
+    # resolve is a fault rather than an absence.
+    confirms_brand_stocking = True
+
     #: Brands whose Next slug is not the obvious slugification. Next drops
     #: accented characters rather than folding them, so "Estée Lauder"
     #: becomes "este-lauder" and not "estee-lauder".

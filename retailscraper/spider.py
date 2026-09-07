@@ -17,7 +17,7 @@ reimplement any of it.
 from __future__ import annotations
 
 import re
-from typing import Any, AsyncGenerator, Dict, List, Optional, Sequence
+from typing import Any, AsyncGenerator, Callable, Dict, List, Optional, Sequence
 
 from scrapling.spiders import CrawlRule, LinkExtractor, Request, SitemapSpider
 
@@ -56,6 +56,7 @@ class RetailPromotionSpider(SitemapSpider):
         strict_brand: bool = False,
         resolve_categories: bool = False,
         campaigns_only: bool = False,
+        on_product: Optional[Callable[[Any], None]] = None,
     ) -> None:
         """
         :param adapter: The retailer adapter supplying URLs and selectors.
@@ -124,6 +125,9 @@ class RetailPromotionSpider(SitemapSpider):
         # Lewis blocked all 96 Too Faced requests and the run reported "may
         # not be stocked", which is a wrong business conclusion.
         self.blocked_by_brand: Dict[str, int] = {}
+        #: Called with each newly accepted product, so a caller can save as
+        #: the crawl goes rather than only at the end.
+        self.on_product = on_product
 
         self._dispatched = 0
         self._dispatched_by_brand: Dict[str, int] = {}
@@ -548,6 +552,15 @@ class RetailPromotionSpider(SitemapSpider):
         existing = self.products.get(product.product_id)
         if existing is None:
             self.products[product.product_id] = product
+            # Hand the record to whatever is saving as the run goes. A run
+            # that dies otherwise leaves nothing at all: the John Lewis crawl
+            # was stopped at 422 requests and wrote no file, losing about 35
+            # minutes of work.
+            if self.on_product is not None:
+                try:
+                    self.on_product(product)
+                except Exception as exc:  # pragma: no cover - never fatal
+                    self.logger.warning(f"incremental save failed: {exc}")
         else:
             self.logger.debug(
                 f"Duplicate product {product.product_id}: keeping {existing.product_url}, "

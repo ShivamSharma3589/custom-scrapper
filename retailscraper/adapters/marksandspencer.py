@@ -132,6 +132,11 @@ class MarksAndSpencerAdapter(RetailerAdapter):
     # listing does state each product's own type, which is recorded.
     supports_categories = False
 
+    # prepare() resolves this retailer's brand page for each brand and
+    # warns about the ones it cannot find, so an empty brand that DID
+    # resolve is a fault rather than an absence.
+    confirms_brand_stocking = True
+
     #: Brands whose landing-page slug is not the obvious slugification of
     #: their name. Accented spellings are listed because the slug rule strips
     #: accents to nothing ("estée lauder" -> "est-e-lauder").
