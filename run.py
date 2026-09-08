@@ -324,6 +324,12 @@ def main(argv=None) -> int:
 
         # Categories are learned from listing pages during the crawl and applied
         # here, once every product is in hand.
+        # A campaign found on the last page applies to the first product
+        # too, so attachment happens once everything is in hand.
+        with_campaigns = spider.apply_campaigns()
+        if with_campaigns:
+            print(f"campaigns attached to {with_campaigns} product(s)")
+
         if args.resolve_categories:
             filled = spider.apply_category_index()
             print(f"\ncategory index: {len(spider.category_index)} product(s) mapped, "
@@ -344,6 +350,7 @@ def main(argv=None) -> int:
             campaigns=spider.campaigns.values(),
             rejected=spider.rejected,
             stats=stats,
+            run_id=run_id,
         )
 
         if args.brands:
@@ -455,6 +462,11 @@ def main(argv=None) -> int:
         )
         empty = [b for b in args.brands if found.get(b, 0) == 0] if args.brands else []
 
+        # What the retailer itself says it lists, where it says so. Only
+        # John Lewis and M&S publish a total; the rest return None and are
+        # judged on what they found.
+        expected_products = adapter.expected_product_count(args.brands)
+
         status, reason = verdict(
             stats=stats,
             products=run_stats["product_records"],
@@ -465,6 +477,7 @@ def main(argv=None) -> int:
             # its products, which the checks above already cover.
             campaigns=(run_stats["campaign_records"]
                        if args.campaigns_only else None),
+            expected_products=expected_products,
         )
         refused, total, share = refusal_rate(stats)
         if total:

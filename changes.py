@@ -47,6 +47,103 @@ def parse_args(argv=None) -> argparse.Namespace:
     return parser.parse_args(argv)
 
 
+def find_latest_run_folders(output_dir: Path, retailer: str, brands) -> list:
+    """The two most recent scheduled runs of one retailer.
+
+    Scheduled runs live at `<retailer>/YYYY/MM/DD/HH-MM-SS/`, which sorts
+    chronologically as a path, so the newest two are the last two. This is
+    where a cron job puts its results, and without it `--latest` kept
+    comparing whatever happened to be in `output/history/` -- on this machine
+    a pair of runs from the first of the month, while the scheduled runs it
+    should have been reading went unnoticed beside them.
+
+    Each folder holds one result document plus a manifest; the manifest is
+    metadata about the run, not a run, so it is skipped.
+    """
+    if not output_dir.exists():
+        return []
+
+    wanted = retailer.lower().replace(" ", "_") if retailer else None
+    runs = []
+    for manifest in output_dir.rglob("manifest.json"):
+        folder = manifest.parent
+        # <retailer>/YYYY/MM/DD/HH-MM-SS -- five parts above the output dir.
+        try:
+            parts = folder.relative_to(output_dir).parts
+        except ValueError:
+            continue
+        if len(parts) != 5:
+            continue
+        if wanted and wanted not in parts[0]:
+            continue
+
+        documents = [
+            p for p in folder.glob("*.json")
+            if p.name not in ("manifest.json", "campaigns.json")
+        ]
+        if not documents:
+            continue
+        # Brand filters name the per-brand files to compare; without one,
+        # every brand in the run is compared together.
+        if brands:
+            brand_files = {b.lower().replace(" ", "-") for b in brands}
+            documents = [p for p in documents if p.stem.lower() in brand_files]
+            if not documents:
+                continue
+        runs.append((parts[0], "/".join(parts[1:]), sorted(documents)))
+
+    if not runs:
+        return []
+
+    # Two runs OF THE SAME RETAILER, or the comparison is meaningless.
+    newest_retailer = max(runs, key=lambda r: r[1])[0]
+    same = sorted(
+        (r for r in runs if r[0] == newest_retailer), key=lambda r: r[1]
+    )
+    return [r[2] for r in same[-2:]]
+
+
+def _label(documents) -> str:
+    """A short name for what was compared: the run folder, or one file."""
+    if isinstance(documents, Path):
+        return documents.name
+    folders = {p.parent.name for p in documents}
+    return f"{'/'.join(sorted(folders))} ({len(documents)} brand file(s))"
+
+
+def load_run(documents) -> dict:
+    """One run's records, gathered from its per-brand files.
+
+    A run folder now holds `clinique.json`, `mac.json` and so on rather than
+    one combined document, so a diff has to read them all. Comparing a single
+    file would silently compare one brand and report every other brand's
+    products as removed.
+    """
+    if isinstance(documents, Path):
+        documents = [documents]
+
+    merged: dict = {}
+    products: list = []
+    campaigns: dict = {}
+    for path in sorted(documents):
+        with path.open(encoding="utf-8") as handle:
+            payload = json.load(handle)
+        if not merged:
+            merged = {k: v for k, v in payload.items()
+                      if k not in ("products", "campaigns", "rejected")}
+        products.extend(payload.get("products") or [])
+        # Campaigns repeat in every brand's file; keep one of each.
+        for campaign in payload.get("campaigns") or []:
+            campaigns[campaign.get("campaign_id")] = campaign
+
+    merged["products"] = products
+    merged["campaigns"] = list(campaigns.values())
+    merged["target_brands"] = sorted({
+        p.get("brand_matched_to") or p.get("brand") for p in products
+    } - {None})
+    return merged
+
+
 def find_latest(history_dir: Path, retailer: str, brands) -> list:
     """The two most recent archived runs matching the filters.
 
@@ -91,7 +188,13 @@ def main(argv=None) -> int:
     args = parse_args(argv)
 
     if args.latest:
-        runs = find_latest(args.history_dir, args.retailer, args.brands)
+        # Scheduled run folders first -- that is where a cron job writes --
+        # and the older --archive layout only as a fallback.
+        runs = find_latest_run_folders(
+            args.history_dir.parent, args.retailer, args.brands
+        )
+        if len(runs) < 2:
+            runs = find_latest(args.history_dir, args.retailer, args.brands)
         if len(runs) < 2:
             print(f"error: need two archived runs in {args.history_dir} to compare, "
                   f"found {len(runs)}. Run the scraper twice with --archive.",
@@ -104,10 +207,8 @@ def main(argv=None) -> int:
         return 2
 
     before_path, after_path = runs
-    with before_path.open(encoding="utf-8") as handle:
-        before = json.load(handle)
-    with after_path.open(encoding="utf-8") as handle:
-        after = json.load(handle)
+    before = load_run(before_path)
+    after = load_run(after_path)
 
     try:
         result = diff_runs(before, after)
@@ -116,8 +217,8 @@ def main(argv=None) -> int:
         return 2
 
     print(f"{result['retailer']}")
-    print(f"  before: {result['before_scraped_at']}  ({before_path.name})")
-    print(f"  after : {result['after_scraped_at']}  ({after_path.name})")
+    print(f"  before: {result['before_scraped_at']}  ({_label(before_path)})")
+    print(f"  after : {result['after_scraped_at']}  ({_label(after_path)})")
     print()
 
     if not result["changes"]:

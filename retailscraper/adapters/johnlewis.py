@@ -289,7 +289,7 @@ class JohnLewisAdapter(RetailerAdapter):
                 # is carried through. Whitelisting only code and slug once
                 # silently dropped the facets `prepare` had just written, so
                 # discovery fell back to the brand root's two pages.
-                for extra in ("pages", "facets"):
+                for extra in ("pages", "results", "facets"):
                     if value.get(extra):
                         entry[extra] = value[extra]
                 upgraded[key] = entry
@@ -320,6 +320,22 @@ class JohnLewisAdapter(RetailerAdapter):
         ]
         warnings.extend(self._measure_catalogues(brands, pages))
         return warnings
+
+    def expected_product_count(self, brands: Sequence[str]) -> Optional[int]:
+        """The total John Lewis says it lists for these brands.
+
+        Read from each brand listing by `prepare()` and cached, so asking
+        costs nothing. It is what makes a soft-blocked crawl visible: John
+        Lewis states `results: 236` for Clinique and then answers page three
+        with a 404, so a run that collects 48 of them would otherwise report
+        success with a fifth of the catalogue.
+        """
+        totals = [
+            int(page["results"])
+            for page in self.brand_pages(brands).values()
+            if str(page.get("results", "")).isdigit()
+        ]
+        return sum(totals) if totals else None
 
     def _measure_catalogues(
         self, brands: Sequence[str], pages: Dict[str, Dict[str, str]]
@@ -358,6 +374,7 @@ class JohnLewisAdapter(RetailerAdapter):
             results, available = int(found.group(1)), int(found.group(2))
             entry = cache.setdefault(slug, dict(page))
             entry["pages"] = available
+            entry["results"] = results
             entry["facets"] = self._category_facets(html)
             dirty = True
 

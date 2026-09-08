@@ -73,11 +73,40 @@ class ProductMatch:
         cheapest over Lookfantastic's £86.40 for the 50ml, a £52.80 gap that
         does not exist. Those offers stay in `offers` so the reader can see
         them; they are simply not ranked.
+
+        Offers in another currency are excluded for the same reason. Nothing
+        in the pipeline stops a non-sterling price reaching the output --
+        validation does not check currency, and the adapters that read it off
+        the page pass on whatever it says -- so a EUR price would otherwise be
+        ranked against a GBP one as though 45 and 50 were the same kind of
+        number, and named the cheaper of the two.
         """
-        return [
+        priced = [
             o for o in self.offers
             if o.get("current_price") is not None and not o.get("price_is_from")
         ]
+        if not priced:
+            return []
+
+        # The currency most of the offers agree on. A single odd one out is
+        # the suspect, not the majority.
+        common = Counter(
+            o.get("currency") for o in priced if o.get("currency")
+        ).most_common(1)
+        if not common:
+            return priced
+        return [o for o in priced if o.get("currency") == common[0][0]]
+
+    @property
+    def currency_mismatch(self) -> bool:
+        """True when the offers are not all priced in the same currency.
+
+        Reported rather than silently resolved: it means one retailer served
+        a page in another currency, which is a fact about the run worth
+        seeing, not a row to quietly drop.
+        """
+        seen = {o.get("currency") for o in self.offers if o.get("current_price") is not None}
+        return len({c for c in seen if c}) > 1
 
     @property
     def cheapest(self) -> Optional[Dict[str, Any]]:
@@ -139,6 +168,9 @@ class ProductMatch:
             # True when the retailers disagree about the RRP, which usually
             # means the titles matched but the products did not.
             "rrp_disagreement": self.rrp_disagreement,
+            # True when the offers were not all in one currency, so only the
+            # majority currency was ranked.
+            "currency_mismatch": self.currency_mismatch,
             "offers": self.offers,
         }
 

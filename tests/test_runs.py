@@ -139,6 +139,30 @@ def run() -> int:
             failures += 1
             print("  FAIL a failure with no reason given")
 
+    print("\n=== a crawl cut short is not a successful crawl ===")
+    # John Lewis states `results: 236` for Clinique on page one and then
+    # answers page three with a 404 -- a soft block on deep pagination. The
+    # crawl collects two pages per brand, every request succeeds, and without
+    # this the run reports OK on a fifth of the catalogue.
+    healthy = stats(1200, **{"200": 1200})
+    for label, products, expected, want in [
+        ("336 of 1,232 -- soft-blocked pagination", 336, 1232, STATUS_FAILED),
+        ("1,100 of 1,232 -- a normal crawl", 1100, 1232, STATUS_OK),
+        # A stated total counts things a brand crawl will not return: other
+        # colours of one product, items out of stock. The bar is deliberately
+        # not 100%.
+        ("700 of 1,232 -- short but plausible", 700, 1232, STATUS_OK),
+        ("no stated total, so nothing to compare", 336, None, STATUS_OK),
+    ]:
+        status, reason = verdict(healthy, products, [], [],
+                                 expected_products=expected)
+        ok = status == want
+        failures += 0 if ok else 1
+        print(f"  {'ok  ' if ok else 'FAIL'} {label[:46]:48} {status}")
+        if status == STATUS_FAILED and reason and "of the" not in reason:
+            failures += 1
+            print("  FAIL the reason does not say how much was collected")
+
     print("\n=== a campaigns-only run is judged on its campaigns ===")
     # Without this the mode had no failure check at all: a retailer redesign
     # that breaks the offers-hub selector returns zero campaigns, and the run

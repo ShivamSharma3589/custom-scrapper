@@ -236,6 +236,89 @@ def run() -> int:
         failures += 0 if ok else 1
         print(f"  {'ok  ' if ok else 'FAIL'} {label}")
 
+    print("\n=== a price in another currency never wins on the number alone ===")
+    # Nothing upstream stops a non-sterling price reaching the output:
+    # validation does not check currency, and the adapters that read it off
+    # the page pass on whatever it says. Ranked naively, 45 of anything beats
+    # 50 of anything, and the report names the wrong retailer cheapest.
+    from retailscraper.matching import ProductMatch  # noqa: E402
+
+    mixed = ProductMatch(
+        brand="Clinique", title="Clinique Thing 50ml",
+        size="volume:50.0", score=1.0,
+        offers=[
+            {"retailer": "Boots", "current_price": 50.0, "currency": "GBP",
+             "price_is_from": False},
+            {"retailer": "Lookfantastic", "current_price": 52.0, "currency": "GBP",
+             "price_is_from": False},
+            {"retailer": "Rogue", "current_price": 45.0, "currency": "EUR",
+             "price_is_from": False},
+        ],
+    )
+    row = mixed.to_dict()
+    for label, ok, detail in [
+        ("the sterling price wins, not the smaller number",
+         row["cheapest_retailer"] == "Boots", row["cheapest_retailer"]),
+        ("the gap is computed within one currency",
+         row["price_gap"] == 2.0, row["price_gap"]),
+        ("the mismatch is reported, not hidden",
+         row["currency_mismatch"] is True, row["currency_mismatch"]),
+        ("the odd offer is still visible to the reader",
+         len(row["offers"]) == 3, len(row["offers"])),
+    ]:
+        failures += 0 if ok else 1
+        print(f"  {'ok  ' if ok else 'FAIL'} {label}"
+              f"{('  ' + str(detail)) if not ok else ''}")
+
+    same = ProductMatch(
+        brand="Clinique", title="Clinique Thing 50ml",
+        size="volume:50.0", score=1.0,
+        offers=[
+            {"retailer": "Boots", "current_price": 50.0, "currency": "GBP",
+             "price_is_from": False},
+            {"retailer": "ASOS", "current_price": 45.0, "currency": "GBP",
+             "price_is_from": False},
+        ],
+    ).to_dict()
+    for label, ok in [
+        ("one currency is not flagged", same["currency_mismatch"] is False),
+        ("and the cheaper price still wins", same["cheapest_retailer"] == "ASOS"),
+    ]:
+        failures += 0 if ok else 1
+        print(f"  {'ok  ' if ok else 'FAIL'} {label}")
+
+    print("\n=== comparing runs ignores files that are not runs ===")
+    # A run folder holds manifest.json beside its results, so the obvious
+    # glob -- output/asos/2026/09/07/*/*.json -- picks the manifest up too.
+    # Its `products` is a COUNT, not a list, and extending a list with an
+    # int ended the whole comparison with "'int' object is not iterable".
+    import json as _json
+    import tempfile
+
+    from compare import load_products  # noqa: E402
+
+    with tempfile.TemporaryDirectory() as tmp:
+        folder = Path(tmp)
+        (folder / "asos_clinique.json").write_text(_json.dumps({
+            "products": [{"product_title": "Clinique Thing", "current_price": 10.0}],
+        }), encoding="utf-8")
+        (folder / "manifest.json").write_text(_json.dumps({
+            "run_id": "x", "products": 470, "campaigns": 2,
+        }), encoding="utf-8")
+        (folder / "broken.json").write_text("{not json", encoding="utf-8")
+
+        loaded = load_products(sorted(folder.glob("*.json")))
+        for label, ok, detail in [
+            ("the real run is read", len(loaded) == 1, len(loaded)),
+            ("a product COUNT is not mistaken for products",
+             bool(loaded) and loaded[0].get("product_title") == "Clinique Thing",
+             loaded),
+            ("unreadable json does not stop the comparison", True, None),
+        ]:
+            failures += 0 if ok else 1
+            print(f"  {'ok  ' if ok else 'FAIL'} {label}"
+                  f"{('  ' + str(detail)) if not ok else ''}")
+
     print(f"\n{'ALL CHECKS PASSED' if failures == 0 else f'{failures} CHECK(S) FAILED'}")
     return 1 if failures else 0
 

@@ -32,7 +32,7 @@ from typing import Dict, List, Optional, Sequence
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from retailscraper.adapters.base import available_adapters, get_adapter  # noqa: E402
-from retailscraper.runs import utc_now  # noqa: E402
+from retailscraper.runs import retailer_folder_name, utc_now  # noqa: E402
 
 #: The brands this sweep tracks. One list, so a brand is added in one place
 #: rather than in eight cron lines.
@@ -45,6 +45,19 @@ DEFAULT_BRANDS = [
 #: deleted so the exclusion is visible and reversible.
 EXCLUDED: Dict[str, str] = {
     "next": "refuses roughly four requests in five; revisit from the UK server",
+}
+
+#: How long a single retailer may take before the sweep gives up on it.
+#: Without a limit, `subprocess.run` waits forever: a browser session that
+#: hangs -- which is what a stalled Playwright page looks like -- would block
+#: the sweep indefinitely, and every later cron firing would pile another
+#: sweep on top of it. Generous, because John Lewis at 30s per request is
+#: slow but not stuck.
+DEFAULT_TIMEOUT_SECONDS = 4 * 60 * 60
+
+#: Retailers allowed longer, because their catalogue genuinely warrants it.
+TIMEOUT_SECONDS: Dict[str, int] = {
+    "johnlewis": 6 * 60 * 60,
 }
 
 #: Retailers that refuse often but still deliver, with the share of refusals
@@ -112,7 +125,20 @@ def run_one(
     limit = REFUSAL_LIMITS.get(name)
     if limit is not None:
         command += ["--refusal-limit", str(limit)]
-    return subprocess.run(command)
+
+    timeout = TIMEOUT_SECONDS.get(name, DEFAULT_TIMEOUT_SECONDS)
+    try:
+        return subprocess.run(command, timeout=timeout)
+    except subprocess.TimeoutExpired:
+        # The child is killed by the timeout, but its lock file outlives it:
+        # the process never reached its `finally`. Clearing it here keeps the
+        # next scheduled run from skipping this retailer for six hours over a
+        # hang that is already over.
+        print(f"  {name} exceeded {timeout / 3600:.0f}h and was stopped",
+              file=sys.stderr)
+        lock = out_dir / f".{retailer_folder_name(get_adapter(name))}.lock"
+        lock.unlink(missing_ok=True)
+        return subprocess.CompletedProcess(command, returncode=2)
 
 
 def main(argv=None) -> int:

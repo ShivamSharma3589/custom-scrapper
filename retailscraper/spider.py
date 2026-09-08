@@ -178,7 +178,17 @@ class RetailPromotionSpider(SitemapSpider):
                 yield Request(url, callback=self.parse_campaign_directory)
             return
 
-        for url in self.adapter.campaign_seed_urls(self.brands):
+        # The retailer's offers hub, on every run and not just a campaigns-only
+        # one. Without it a brand run recorded only the promotions it happened
+        # to pass while crawling products, so `campaigns.json` was a sample
+        # rather than the answer to "what is this retailer running?". One to
+        # three extra requests buys the whole picture.
+        seeds = list(self.adapter.campaign_seed_urls(self.brands))
+        for url in self.adapter.campaign_discovery_urls():
+            if url not in seeds:
+                yield Request(url, callback=self.parse_campaign_directory)
+
+        for url in seeds:
             yield Request(url, callback=self.parse_campaign_page)
 
         # Collect the listing pages this retailer offers for the requested
@@ -543,9 +553,9 @@ class RetailPromotionSpider(SitemapSpider):
         if route_category and not product.category:
             product.category = route_category
 
-        # Link this product to the promotions that actually apply to it: its
-        # own offer, plus any site-wide campaign running at the same time.
-        product.applied_campaigns = self._campaigns_for(product)
+        # Campaigns are attached after the crawl, by apply_campaigns(), not
+        # here: a campaign found later applies to a product found earlier,
+        # and attaching as we go made the result depend on page order.
 
         # Deduplicate on the retailer's product id, so the same item reached
         # through several URLs collapses into one record.
@@ -573,6 +583,27 @@ class RetailPromotionSpider(SitemapSpider):
         """Store a campaign once, regardless of how many pages showed it."""
         if campaign.campaign_id not in self.campaigns:
             self.campaigns[campaign.campaign_id] = campaign
+
+    def apply_campaigns(self) -> int:
+        """Attach campaigns to every product, once the crawl has finished.
+
+        This has to happen at the end rather than as each product is
+        accepted, because a campaign found on page 40 applies just as much to
+        the product read on page 1. Attaching during the crawl made
+        `applied_campaigns` depend on the order pages happened to arrive: an
+        ASOS run gave its one site-wide campaign to 255 of 775 products and
+        left the other 520 without it, though a site-wide campaign applies to
+        everything by definition.
+
+        Returns how many products had campaigns attached.
+        """
+        touched = 0
+        for product in self.products.values():
+            applied = self._campaigns_for(product)
+            product.applied_campaigns = applied
+            if applied:
+                touched += 1
+        return touched
 
     def _campaigns_for(self, product: Product) -> List[str]:
         """Ids of the campaigns that apply to this product.

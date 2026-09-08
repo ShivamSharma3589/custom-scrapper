@@ -80,27 +80,50 @@ def main(argv=None) -> int:
             print("    could not fetch\n")
             continue
 
-        # Pass the brands through: an adapter may use them for
-        # last-resort brand corroboration on pages with no structured brand.
-        product = adapter.parse_product(response, str(response.url), args.brands)
-        if product is None:
+        # `extract_product` is the adapter contract. This used to call
+        # `parse_product`, which only Lookfantastic still has, so the one tool
+        # built to catch confidently-wrong extraction raised AttributeError on
+        # the other seven retailers -- the check most worth having was the
+        # check that could not run.
+        #
+        # Brands are passed through because an adapter may use them for
+        # last-resort corroboration on a page with no structured brand.
+        products = adapter.extract_product_variants(response, args.brands)
+        if not products:
+            single = adapter.extract_product(response, args.brands)
+            products = [single] if single is not None else []
+
+        if not products:
             print("    no product extracted from this page\n")
             continue
 
-        rejection = validate(product, args.brands or [product.brand])
-        print(f"    title      : {product.product_title}")
-        print(f"    brand      : {product.brand}  (via {product.brand_verified_by})")
-        print(f"    id / sku   : {product.product_id} / {product.sku}   variants: {product.variant_count}")
-        print(f"    was -> now : {product.original_price} -> {product.current_price} {product.currency}")
-        print(f"    discount   : {product.discount_amount} ({product.discount_percent}%)")
-        print(f"    stock      : {product.availability}")
-        print(f"    promo      : {product.promotional_copy}")
-        print(f"    verdict    : {rejection.reason if rejection else 'ACCEPTED'}")
-        if rejection:
-            print(f"                 {rejection.detail}")
-        print()
+        if len(products) > 1:
+            print(f"    ({len(products)} sizes behind this page)")
+
+        for product in products:
+            _report(product, args.brands)
+        continue
 
     return 0
+
+
+def _report(product, brands) -> None:
+    """Print one extracted record beside what a person would see on the page."""
+    rejection = validate(product, brands or [product.brand])
+    print(f"    title      : {product.product_title}")
+    print(f"    brand      : {product.brand}  (via {product.brand_verified_by})")
+    print(f"    id / sku   : {product.product_id} / {product.sku}   "
+          f"variants: {product.variant_count}")
+    print(f"    was -> now : {product.original_price} -> {product.current_price} "
+          f"{product.currency}"
+          f"{'  (from-price)' if product.price_is_from else ''}")
+    print(f"    discount   : {product.discount_amount} ({product.discount_percent}%)")
+    print(f"    stock      : {product.availability}")
+    print(f"    promo      : {product.promotional_copy}")
+    print(f"    verdict    : {rejection.reason if rejection else 'ACCEPTED'}")
+    if rejection:
+        print(f"                 {rejection.detail}")
+    print()
 
 
 if __name__ == "__main__":

@@ -24,6 +24,10 @@ from .models import Campaign, Product, RejectedRecord
 # Column order for the flat exports. Fixed so that a diff between two runs
 # shows changed data rather than reshuffled columns.
 PRODUCT_COLUMNS = [
+    # run_id first on every flat export: it is what ties a row back to the
+    # run that produced it, so a bad run's rows can be found and removed,
+    # and the same folder is never loaded into the warehouse twice.
+    "run_id",
     "retailer", "brand", "brand_matched_to", "category",
     "product_title", "product_id", "sku",
     "current_price", "price_is_from", "original_price", "discount_amount", "discount_percent",
@@ -33,12 +37,13 @@ PRODUCT_COLUMNS = [
 ]
 
 CAMPAIGN_COLUMNS = [
+    "run_id",
     "campaign_id", "retailer", "scope", "scope_value",
     "promotion_type", "promotion_text", "promo_code",
     "landing_url", "source_url",
 ]
 
-REJECTED_COLUMNS = ["reason", "detail", "source_url", "product_title", "product_id"]
+REJECTED_COLUMNS = ["run_id", "reason", "detail", "source_url", "product_title", "product_id"]
 
 
 def build_payload(
@@ -49,22 +54,33 @@ def build_payload(
     campaigns: Iterable[Campaign],
     rejected: Iterable[RejectedRecord],
     stats: Dict[str, Any],
+    run_id: str = "",
 ) -> Dict[str, Any]:
-    """Assemble the full result document for one run."""
+    """Assemble the full result document for one run.
+
+    `run_id` is stamped onto every row rather than only onto the document,
+    because the rows are what reach the warehouse: a CSV opened on its own,
+    or a table loaded from many runs, otherwise carries no way back to the
+    run that produced it.
+    """
     product_list = sorted(products, key=lambda p: (p.brand, p.product_title))
     campaign_list = sorted(campaigns, key=lambda c: (c.scope, c.promotion_text))
     rejected_list = list(rejected)
 
+    def stamped(record: Dict[str, Any]) -> Dict[str, Any]:
+        return {"run_id": run_id, **record}
+
     return {
+        "run_id": run_id,
         "retailer": retailer,
         "domain": domain,
         "scraped_at": datetime.now(timezone.utc).isoformat(),
         "target_brands": list(brands),
-        "campaigns": [c.to_dict() for c in campaign_list],
-        "products": [p.to_dict() for p in product_list],
+        "campaigns": [stamped(c.to_dict()) for c in campaign_list],
+        "products": [stamped(p.to_dict()) for p in product_list],
         # Rejections are part of the output on purpose: a consumer can see
         # what we refused to vouch for, and why.
-        "rejected": [r.to_dict() for r in rejected_list],
+        "rejected": [stamped(r.to_dict()) for r in rejected_list],
         "run_stats": {
             **stats,
             "campaign_records": len(campaign_list),
@@ -108,60 +124,105 @@ def _brand_filename_part(brand: str) -> str:
     return re.sub(r"[^a-z0-9]+", "-", brand.casefold()).strip("-") or "unknown"
 
 
-def write_csvs(payload: Dict[str, Any], prefix: Path) -> List[Path]:
-    """Write the flat CSV views of a run.
-
-    Products are split into one file per brand. The JSON keeps every brand
-    together because the campaigns are shared between them, but a CSV is
-    opened by a person looking at one brand at a time -- and a combined file
-    ends up named after every brand in the run, which becomes unusable once
-    there are seven of them.
-    """
-    products = []
+def _flat_products(payload: Dict[str, Any]) -> List[Dict[str, Any]]:
+    """Product rows with the campaign list flattened for CSV."""
+    rows = []
     for row in payload["products"]:
         row = dict(row)
         # A list is not a CSV value; join the campaign ids into one cell.
         row["applied_campaigns"] = ";".join(row.get("applied_campaigns") or [])
-        products.append(row)
+        rows.append(row)
+    return rows
 
-    rejected = []
+
+def _flat_rejections(payload: Dict[str, Any]) -> List[Dict[str, Any]]:
+    """Rejection rows, reduced to the fields a person reads."""
+    rows = []
     for row in payload["rejected"]:
-        payload_fields = row.get("payload") or {}
-        rejected.append({
+        fields = row.get("payload") or {}
+        rows.append({
+            "run_id": row.get("run_id"),
             "reason": row.get("reason"),
             "detail": row.get("detail"),
             "source_url": row.get("source_url"),
-            "product_title": payload_fields.get("product_title"),
-            "product_id": payload_fields.get("product_id"),
+            "product_title": fields.get("product_title"),
+            "product_id": fields.get("product_id"),
         })
+    return rows
 
+
+def group_by_brand(rows: List[Dict[str, Any]]) -> Dict[str, List[Dict[str, Any]]]:
+    """Split records by the brand they were requested as.
+
+    Grouped on `brand_matched_to` -- the name the business asked for -- rather
+    than `brand`, the retailer's own trading name, so "Jo Malone London" at
+    one shop and "Jo Malone" at another land in the same file.
+    """
+    grouped: Dict[str, List[Dict[str, Any]]] = {}
+    for row in rows:
+        key = row.get("brand_matched_to") or row.get("brand") or "unknown"
+        grouped.setdefault(key, []).append(row)
+    return grouped
+
+
+def write_all(payload: Dict[str, Any], out_dir: Path, basename: str = "") -> List[Path]:
+    """Write one run's results: a file per brand, plus the shared views.
+
+        clinique.json          every Clinique record, and the run's campaigns
+        clinique_products.csv
+        mac.json
+        mac_products.csv
+        campaigns.csv          every campaign the retailer is running
+        rejected.csv           what was refused, and why
+
+    Names carry the brand and nothing else. The folder already says which
+    retailer and which run these belong to, and a single combined document
+    ended up named after every brand in the run --
+    `lookfantastic_clinique-mac-tom-ford-jo-malone-estee-lauder-bobbi-brown-
+    too-faced.json` -- which is unusable as a filename and impossible to pick
+    a brand out of.
+
+    Each brand's JSON carries the run's campaigns as well as its products, so
+    one file answers "what is this retailer doing to this brand" without
+    needing a second. Campaigns are retailer-wide rather than brand-specific,
+    so they repeat across the files; `campaigns.csv` holds the single copy.
+
+    `basename` is accepted and ignored, so existing callers keep working.
+    """
     written: List[Path] = []
 
-    # One products file per requested brand. Group on `brand_matched_to` (the
-    # name we were asked for) rather than `brand` (the retailer's own naming),
-    # so "Jo Malone London" lands in the jo-malone file.
-    by_brand: Dict[str, List[Dict[str, Any]]] = {}
-    for row in products:
-        key = row.get("brand_matched_to") or row.get("brand") or "unknown"
-        by_brand.setdefault(key, []).append(row)
+    products = _flat_products(payload)
+    shared = {
+        key: payload.get(key)
+        for key in ("run_id", "retailer", "domain", "scraped_at", "run_stats")
+    }
+    campaigns = payload.get("campaigns") or []
 
-    retailer_part = prefix.name.split("_")[0]
-    for brand, rows in sorted(by_brand.items()):
-        filename = f"{retailer_part}_{_brand_filename_part(brand)}_products.csv"
-        written.append(_write_csv(rows, PRODUCT_COLUMNS, prefix.with_name(filename)))
+    for brand, rows in sorted(group_by_brand(payload["products"]).items()):
+        stem = _brand_filename_part(brand)
+        written.append(write_json({
+            **shared,
+            "brand": brand,
+            "target_brands": [brand],
+            "products": rows,
+            "campaigns": campaigns,
+            "rejected": [
+                r for r in payload.get("rejected") or []
+                if (r.get("payload") or {}).get("brand_matched_to") == brand
+            ],
+        }, out_dir / f"{stem}.json"))
 
-    # Campaigns and rejections stay whole: campaigns are shared across brands,
-    # and rejections are per-run diagnostics rather than per-brand reporting.
-    written.append(_write_csv(payload["campaigns"], CAMPAIGN_COLUMNS,
-                              prefix.with_name(prefix.name + "_campaigns.csv")))
-    written.append(_write_csv(rejected, REJECTED_COLUMNS,
-                              prefix.with_name(prefix.name + "_rejected.csv")))
-    return written
+    for brand, rows in sorted(group_by_brand(products).items()):
+        written.append(_write_csv(
+            rows, PRODUCT_COLUMNS,
+            out_dir / f"{_brand_filename_part(brand)}_products.csv",
+        ))
 
-
-def write_all(payload: Dict[str, Any], out_dir: Path, basename: str) -> List[Path]:
-    """Write the JSON document and the CSV views for one run."""
-    prefix = out_dir / basename
-    written = [write_json(payload, prefix.with_suffix(".json"))]
-    written.extend(write_csvs(payload, prefix))
+    # Retailer-wide, so named for the retailer's run rather than a brand.
+    written.append(_write_csv(campaigns, CAMPAIGN_COLUMNS,
+                              out_dir / "campaigns.csv"))
+    written.append(write_json(
+        {**shared, "campaigns": campaigns}, out_dir / "campaigns.json"))
+    written.append(_write_csv(_flat_rejections(payload), REJECTED_COLUMNS,
+                              out_dir / "rejected.csv"))
     return written

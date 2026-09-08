@@ -192,6 +192,107 @@ three layouts that behave differently (discounted single-variant, discounted
 multi-variant, and full-price). They let extraction be re-checked after any
 change without sending a request.
 
+## Running on a schedule
+
+`run_all.py` is the entry point a cron job calls. It runs every retailer in
+sequence and returns one exit code, so the schedule is a single line:
+
+```bash
+# 06:00 and 18:00 UTC
+0 6,18 * * *  cd /srv/scraper && .venv/bin/python run_all.py
+```
+
+Retailers run **one at a time, never together**. Three browser-driven crawls
+at once starved DNS badly enough to turn a 54-minute run into 30 hours. Each
+retailer is also given a wall-clock limit, so a browser session that hangs
+costs one retailer rather than blocking the sweep for ever.
+
+### What the exit code means
+
+| Code | Meaning | What to do |
+|---|---|---|
+| `0` | Every retailer produced usable data | Load it all |
+| `1` | Some retailers failed | Load the rest, investigate the failures |
+| `2` | Every retailer failed | Alert; load nothing |
+| `3` | *(per retailer)* skipped, a previous run was still going | Nothing — the lock did its job |
+
+A retailer **fails** when more than 30% of its requests were refused
+(403/429/503), or a brand the retailer *confirmed it stocks* returned
+nothing, or a `--campaigns-only` run found no campaigns at all. Before this
+existed every run exited `0`, including one that had 1,501 of its 1,840
+requests refused and produced five products.
+
+Two thresholds are deliberately adjustable, because failing a *good* run is
+just as expensive. `REFUSAL_LIMITS` in `run_all.py` raises the bar for a
+retailer that refuses often but still delivers — John Lewis produced 770
+products in a run that refused 33.8% of its requests. And only an adapter
+declaring `confirms_brand_stocking` is judged on empty brands: ASOS stocks
+neither Jo Malone nor Tom Ford, and failing a 775-product run over two brands
+it never had would page someone for nothing.
+
+### Where a run puts its results
+
+```
+output/john_lewis/2026/09/07/14-30-00/
+    johnlewis_clinique_products.csv   one per brand
+    johnlewis_campaigns.csv           one per retailer
+    johnlewis_rejected.csv
+    johnlewis.json
+    run.log                           every request, warning and error
+    manifest.json                     what happened, and whether to trust it
+```
+
+Timestamps are **UTC** and zero-padded, and both matter: British clocks move
+twice a year, so in local time 01:30 happens twice each October — two runs,
+one folder, the second erasing the first — and unpadded, month `10` sorts
+before month `2`.
+
+Nothing is ever overwritten, so `changes.py --latest` compares a retailer's
+two most recent scheduled runs directly.
+
+### manifest.json
+
+One per run, and the row worth keeping in a warehouse:
+
+```
+run_id · retailer · started_at · finished_at · duration_seconds
+status · reason
+products · campaigns · rejected
+requests_total · requests_refused
+brands_requested · brands_empty · warnings · files
+```
+
+`status` is `ok`, `failed`, or `incomplete` — the last meaning the run was
+killed part-way and the folder holds `products.partial.jsonl` instead of
+finished output. Products are flushed there every 50 records, so a run that
+dies leaves usable data rather than nothing.
+
+The same `run_id` is stamped on **every product, campaign and rejection row**,
+in the JSON and the CSVs alike. That is what lets you trace a price back to
+the run that produced it, remove a bad run's rows cleanly, and avoid loading
+one folder twice.
+
+### Checking a night's runs
+
+```bash
+# Did it pass?
+tail -20 output/nightly.log
+
+# Every run's verdict
+find output -name manifest.json -newermt "-14 hours" \
+  -exec python -c "import json,sys; d=json.load(open(sys.argv[1])); \
+  print(f\"{d['retailer']:18} {d['status']:11} {d['products']:>5}p\")" {} \;
+
+# Do the records contradict themselves?
+python audit.py
+```
+
+`audit.py` re-derives every check from the values in the output files and
+shares no code with extraction, so a mistake common to the scraper and its
+own tests cannot hide from it. It checks prices, currencies, discount
+arithmetic, URLs, deduplication and campaign attachment across every run it
+finds.
+
 ## Output
 
 Each run writes one JSON document, one products CSV per brand, plus a

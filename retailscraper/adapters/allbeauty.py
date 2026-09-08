@@ -57,6 +57,18 @@ _PRODUCT_URL_RE = re.compile(
 #: Shopify caps a collection page at 250 products.
 _PAGE_SIZE = 250
 
+#: Shopify states the storefront's active currency on every page:
+#:     Shopify.currency = {"active":"GBP","rate":"1.0"};
+_SHOPIFY_CURRENCY_RE = re.compile(
+    r'Shopify\.currency\s*=\s*\{[^}]*"active"\s*:\s*"([A-Z]{3})"'
+)
+
+#: `prepare` runs before the crawler's session exists, so it uses urllib.
+_PROBE_USER_AGENT = (
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+    "(KHTML, like Gecko) Chrome/124.0 Safari/537.36"
+)
+
 
 @register
 class AllBeautyAdapter(RetailerAdapter):
@@ -103,11 +115,67 @@ class AllBeautyAdapter(RetailerAdapter):
     #: exist; `/collections/special-offers` and `/clearance` return 404.
     CAMPAIGN_HUB_PATHS = ["/collections/offers", "/collections/sale"]
 
+    #: The only currency this adapter will publish.
+    EXPECTED_CURRENCY = "GBP"
+
+    def __init__(self) -> None:
+        #: What the storefront said it was quoting. Defaults to the expected
+        #: currency so a run that skips prepare() still produces records,
+        #: and prepare() replaces it with what the store actually declared.
+        self.storefront_currency = self.EXPECTED_CURRENCY
+
     def configure_session(self, manager) -> None:
         """Plain HTTP. There is no JavaScript to run and no bot wall."""
         from scrapling.fetchers import FetcherSession
 
         manager.add("default", FetcherSession())
+
+    def prepare(self, brands: Sequence[str]) -> List[str]:
+        """Confirm the storefront is still quoting sterling.
+
+        `products.json` gives a bare number -- `"price": "26.20"` -- with no
+        currency anywhere in the payload, so the price this adapter reads
+        carries no evidence of what it is denominated in. Every other adapter
+        reads the currency off the page and refuses anything else; this one
+        alone asserted GBP, which would quietly relabel a euro price as
+        sterling if the store ever served one.
+
+        Shopify states the active currency on any storefront page, so one
+        request per run settles it. AllBeauty is cheapest on more comparisons
+        than any other retailer, so a wrong currency here would distort the
+        whole report rather than one row of it.
+        """
+        import urllib.request
+
+        request = urllib.request.Request(
+            f"https://{self.domain}/",
+            headers={"User-Agent": _PROBE_USER_AGENT},
+        )
+        try:
+            html = urllib.request.urlopen(request, timeout=60).read().decode(
+                "utf-8", "replace"
+            )
+        except Exception:
+            # Unreachable is not the same as wrong; the crawl will fail on
+            # its own if the store is really down.
+            return []
+
+        found = _SHOPIFY_CURRENCY_RE.search(html)
+        if not found:
+            return [
+                f"{self.display_name} did not state its currency, so prices "
+                f"are recorded as {self.EXPECTED_CURRENCY} on the store's "
+                f"usual behaviour rather than on evidence"
+            ]
+
+        self.storefront_currency = found.group(1)
+        if self.storefront_currency != self.EXPECTED_CURRENCY:
+            return [
+                f"{self.display_name} is quoting {self.storefront_currency}, "
+                f"not {self.EXPECTED_CURRENCY}. Its prices are NOT comparable "
+                f"with the other retailers in this run."
+            ]
+        return []
 
     # --- discovery --------------------------------------------------------
 
@@ -268,7 +336,8 @@ class AllBeautyAdapter(RetailerAdapter):
                 if original is not None and original > 0
                 else None
             ),
-            currency="GBP",
+            # What prepare() read off the storefront, not an assumption.
+            currency=self.storefront_currency,
             availability="InStock" if any(v.get("available") for v in variants) else "OutOfStock",
             category=self._category(raw.get("product_type")),
             variant_count=len(variants) or None,

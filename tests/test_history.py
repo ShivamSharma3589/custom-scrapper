@@ -155,6 +155,99 @@ def run() -> int:
         failures += 0 if ok else 1
         print(f"  {'ok  ' if ok else 'FAIL'} {label}")
 
+    print("\n=== --latest finds the runs a schedule actually writes ===")
+    # Scheduled runs live in <retailer>/YYYY/MM/DD/HH-MM-SS/, not in the
+    # output/history/ folder that --archive uses. Looking only in history/
+    # meant `changes.py --latest` kept comparing two runs from the first of
+    # the month while the scheduled runs beside them went unread -- the tool
+    # that exists to spot changes could not see the runs made to find them.
+    import json as _json
+    import tempfile
+
+    from changes import find_latest_run_folders, load_run  # noqa: E402
+
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        for retailer, stamps in (
+            ("allbeauty", ["11-31-09", "19-33-02", "09-00-00"]),
+            ("boots", ["12-08-03"]),
+        ):
+            for stamp in stamps:
+                folder = root / retailer / "2026" / "09" / "07" / stamp
+                folder.mkdir(parents=True)
+                (folder / "manifest.json").write_text("{}", encoding="utf-8")
+                # A run folder holds one file per brand, plus the shared
+                # campaigns document.
+                for brand, price in (("clinique", 10.0), ("mac", 20.0)):
+                    (folder / f"{brand}.json").write_text(_json.dumps({
+                        "retailer": retailer,
+                        "products": [{
+                            "product_id": f"{brand}-1",
+                            "brand_matched_to": brand.title(),
+                            "current_price": price,
+                        }],
+                        "campaigns": [{"campaign_id": "c1", "scope": "sitewide"}],
+                    }), encoding="utf-8")
+                (folder / "campaigns.json").write_text(
+                    _json.dumps({"campaigns": []}), encoding="utf-8")
+
+        found = find_latest_run_folders(root, "allbeauty", [])
+        stamps = [run[0].parent.name for run in found]
+        for label, ok, detail in [
+            ("two runs are returned", len(found) == 2, len(found)),
+            # 09-00-00 sorts before 11-31-09, so "most recent" means the two
+            # latest timestamps, not the last two created.
+            ("the two most recent, oldest first",
+             stamps == ["11-31-09", "19-33-02"], stamps),
+            # Comparing one brand's file would report every other brand's
+            # products as removed.
+            ("every brand file in the run is gathered",
+             all(len(run) == 2 for run in found), [len(r) for r in found]),
+            ("the manifest is not mistaken for a run",
+             all(p.name != "manifest.json" for run in found for p in run), None),
+            ("nor is the shared campaigns document",
+             all(p.name != "campaigns.json" for run in found for p in run), None),
+        ]:
+            failures += 0 if ok else 1
+            print(f"  {'ok  ' if ok else 'FAIL'} {label}"
+                  f"{('  ' + str(detail)) if not ok else ''}")
+
+        # The merge is what a diff actually reads.
+        merged = load_run(found[-1])
+        for label, ok, detail in [
+            ("merging a run gives every brand's products",
+             len(merged["products"]) == 2, len(merged["products"])),
+            ("campaigns repeated in each brand file are counted once",
+             len(merged["campaigns"]) == 1, len(merged["campaigns"])),
+            ("and the brands present are derived from the records",
+             merged["target_brands"] == ["Clinique", "Mac"],
+             merged["target_brands"]),
+        ]:
+            failures += 0 if ok else 1
+            print(f"  {'ok  ' if ok else 'FAIL'} {label}"
+                  f"{('  ' + str(detail)) if not ok else ''}")
+
+        # Diffing two different retailers would report every product as
+        # added and every other as removed.
+        unfiltered = find_latest_run_folders(root, None, [])
+        same = len({p.parents[3].name for run in unfiltered for p in run}) == 1
+        failures += 0 if same else 1
+        print(f"  {'ok  ' if same else 'FAIL'} both runs come from one retailer")
+
+        # Naming a brand narrows the comparison to that brand's files.
+        one_brand = find_latest_run_folders(root, "allbeauty", ["clinique"])
+        ok = one_brand and all(
+            len(run) == 1 and run[0].stem == "clinique" for run in one_brand
+        )
+        failures += 0 if ok else 1
+        print(f"  {'ok  ' if ok else 'FAIL'} a brand filter selects that brand's files")
+
+        single = find_latest_run_folders(root, "boots", [])
+        ok = len(single) == 1
+        failures += 0 if ok else 1
+        print(f"  {'ok  ' if ok else 'FAIL'} a retailer with one run yields one, "
+              "so the caller can say two are needed")
+
     print(f"\n{'ALL CHECKS PASSED' if failures == 0 else f'{failures} CHECK(S) FAILED'}")
     return 1 if failures else 0
 

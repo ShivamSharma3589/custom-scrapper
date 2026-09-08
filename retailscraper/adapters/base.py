@@ -255,6 +255,24 @@ class RetailerAdapter(ABC):
         """
         return []
 
+    def expected_product_count(self, brands: Sequence[str]) -> Optional[int]:
+        """How many products the retailer says it has for these brands.
+
+        Only implemented where the retailer states a count of its own. That
+        number is the difference between "we collected 336 products" and "we
+        collected 336 of the 1,232 this shop says it has" -- and the second
+        is the one worth knowing, because a partial crawl otherwise reports
+        success with a fifth of the catalogue.
+
+        John Lewis does exactly this when it soft-blocks deep pagination: its
+        own page state says `pagesAvailable: 10` while it answers page three
+        with a 404, so a run collects two pages per brand and looks complete.
+
+        Returning None (the default) means the retailer publishes no total,
+        and the run is judged on what it found alone.
+        """
+        return None
+
     def warmup_url(self) -> Optional[str]:
         """A page to fetch first, purely to establish the session.
 

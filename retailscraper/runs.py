@@ -43,6 +43,14 @@ STATUS_INCOMPLETE = "incomplete"
 #: across seven brands, so raise it per retailer rather than failing good runs.
 DEFAULT_REFUSAL_LIMIT = 0.30
 
+#: The share of a retailer's own stated catalogue a run must reach before it
+#: is believable. Well below 1.0 because a stated total counts things a brand
+#: crawl legitimately will not return -- other colours of one product, items
+#: out of stock -- but far enough above zero to catch a crawl that was cut
+#: short: John Lewis says 236 Clinique products and, while soft-blocking deep
+#: pagination, serves 48.
+MIN_COVERAGE = 0.5
+
 #: A lock older than this is assumed to belong to a run that died without
 #: cleaning up, rather than to one still going. Longer than the slowest
 #: retailer's sweep (John Lewis, about an hour) with room to spare.
@@ -258,6 +266,7 @@ def verdict(
     brands_empty: Sequence[str] = (),
     refusal_limit: float = DEFAULT_REFUSAL_LIMIT,
     campaigns: Optional[int] = None,
+    expected_products: Optional[int] = None,
 ) -> Tuple[str, Optional[str]]:
     """Did this run produce data worth loading? Returns (status, reason).
 
@@ -298,6 +307,16 @@ def verdict(
     if campaigns is not None and campaigns == 0:
         return STATUS_FAILED, "no campaigns found on a campaigns-only run"
 
+    # A crawl that was cut short is not a successful crawl. Where the
+    # retailer publishes its own total, collecting a fraction of it means
+    # pagination was blocked or a route broke -- and the run would otherwise
+    # report success on a fifth of the catalogue.
+    if expected_products and products < expected_products * MIN_COVERAGE:
+        return STATUS_FAILED, (
+            f"collected {products} of the {expected_products} products the "
+            f"retailer says it lists ({products / expected_products:.0%})"
+        )
+
     return STATUS_OK, None
 
 
@@ -315,6 +334,7 @@ def build_manifest(
     rejected: int,
     brands_requested: Sequence[str],
     brands_empty: Sequence[str],
+    expected_products: Optional[int] = None,
     reason: Optional[str] = None,
     warnings: Sequence[str] = (),
     files: Sequence[str] = (),
@@ -338,6 +358,9 @@ def build_manifest(
         "status": status,
         "reason": reason,
         "products": products,
+        # What the retailer says it has, where it says so at all. The gap
+        # between this and `products` is the run's real coverage.
+        "expected_products": expected_products,
         "campaigns": campaigns,
         "rejected": rejected,
         "requests_total": total,

@@ -46,15 +46,32 @@ def parse_args(argv=None) -> argparse.Namespace:
 
 
 def load_products(paths) -> list:
-    """Read every product record from the given run files."""
+    """Read every product record from the given run files.
+
+    Anything that is not a run document is skipped rather than crashing the
+    comparison. A run folder now holds `manifest.json` beside its results, so
+    the obvious `output/asos/2026/09/07/*/*.json` sweeps the manifest in too
+    -- and the manifest's `products` is a COUNT, not a list, which ended the
+    whole comparison with `'int' object is not iterable`.
+    """
     products = []
     for path in paths:
         if not path.exists():
             print(f"warning: {path} does not exist, skipping", file=sys.stderr)
             continue
-        with path.open(encoding="utf-8") as handle:
-            payload = json.load(handle)
-        products.extend(payload.get("products", []))
+        try:
+            with path.open(encoding="utf-8") as handle:
+                payload = json.load(handle)
+        except (ValueError, OSError) as exc:
+            print(f"warning: {path.name} could not be read ({exc}), skipping",
+                  file=sys.stderr)
+            continue
+
+        found = payload.get("products") if isinstance(payload, dict) else None
+        if not isinstance(found, list):
+            # A manifest, a changes report, or something else entirely.
+            continue
+        products.extend(found)
     return products
 
 
