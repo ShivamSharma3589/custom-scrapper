@@ -1,26 +1,19 @@
 """Matching the same product across different retailers.
 
-Retailers name the same item differently -- "Clinique Anti Blemish Solutions
-Cleansing Foam 125ml" at one shop is "Clinique Anti-Blemish Solutions(TM)
-Cleansing Foam 125ml" at another. To answer "where is Boots undercutting
-Lookfantastic?", those two have to be recognised as one product.
+Retailers name the same item differently, so "Clinique Anti Blemish
+Solutions Cleansing Foam 125ml" and "Clinique Anti-Blemish Solutions(TM)
+Cleansing Foam 125ml" have to be recognised as one product.
 
-The matching rule is deliberately strict, because a false match produces a
-confident price comparison between two different products -- worse than
-reporting no match at all:
+The rule is deliberately strict, because a false match produces a confident
+price comparison between two different products -- worse than no match:
 
-  1. The brand must be the same (compared on `brand_matched_to`, the name the
-     business asked for, so each retailer's trading name is already resolved).
-  2. The size must be the same. This is non-negotiable: a 125ml and a 200ml
-     cleansing balm share almost every word in their titles but are different
-     products at different prices. Where both titles state a size, the sizes
-     must agree; where neither does, size is not used.
-  3. What remains of the titles must overlap strongly.
+  1. same brand, compared on `brand_matched_to`
+  2. same size -- non-negotiable, since a 125ml and a 200ml balm share
+     almost every word but are different products at different prices
+  3. what remains of the titles must overlap strongly
 
-Anything that fails those is left unmatched rather than guessed at.
+Anything failing those is left unmatched rather than guessed at.
 """
-
-from __future__ import annotations
 
 import re
 from collections import Counter
@@ -33,20 +26,15 @@ _SIZE_RE = re.compile(
     re.IGNORECASE,
 )
 
-# Multi-packs ("3 x 30ml") change what is being sold, so they are captured too.
 _PACK_RE = re.compile(r"\b(\d+)\s*[x×]\s*\d+(?:\.\d+)?\s*(?:ml|l|g|kg|oz|cl)\b", re.IGNORECASE)
 
-# Trademark and registered marks, plus the replacement char that shows up when
-# a retailer's encoding is mangled -- all noise for comparison purposes.
 _NOISE_RE = re.compile(r"[™®©�]")
 
-# Words that carry no distinguishing information between retailers.
 _STOPWORDS = frozenset({
     "the", "a", "an", "and", "for", "with", "of", "in", "to",
     "various", "shades", "shade", "colour", "color", "new",
 })
 
-# Convert everything to a common unit so "1l" and "1000ml" compare equal.
 _UNIT_TO_BASE = {"ml": 1.0, "cl": 10.0, "l": 1000.0, "g": 1.0, "kg": 1000.0, "oz": 28.35}
 _UNIT_KIND = {"ml": "volume", "cl": "volume", "l": "volume",
               "g": "weight", "kg": "weight", "oz": "weight"}
@@ -88,8 +76,7 @@ class ProductMatch:
         if not priced:
             return []
 
-        # The currency most of the offers agree on. A single odd one out is
-        # the suspect, not the majority.
+        # the currency most offers agree on -- the odd one out is the suspect
         common = Counter(
             o.get("currency") for o in priced if o.get("currency")
         ).most_common(1)
@@ -142,10 +129,8 @@ class ProductMatch:
         if len(rrps) >= 2 and max(rrps) > min(rrps) * 1.25:
             return True
 
-        # Not every product carries an RRP, so fall back to the prices
-        # themselves. Two retailers selling the same item do not differ by
-        # more than about half: a 126.40 / 320.00 pair is two different
-        # fragrances that happen to share most of a name, not a saving.
+        # no RRP to compare, so use the prices: two shops selling the same
+        # item do not differ by 2x -- 126.40 / 320.00 is two fragrances
         prices = [o["current_price"] for o in self._comparable]
         if len(prices) >= 2 and max(prices) > min(prices) * 2.0:
             return True
@@ -162,14 +147,8 @@ class ProductMatch:
             "price_gap": self.price_gap,
             "cheapest_retailer": cheapest["retailer"] if cheapest else None,
             "cheapest_price": cheapest["current_price"] if cheapest else None,
-            # Visible so a reader can tell a blank comparison apart from a
-            # genuine tie: these offers exist but are not directly comparable.
             "from_price_offers": self.from_price_count,
-            # True when the retailers disagree about the RRP, which usually
-            # means the titles matched but the products did not.
             "rrp_disagreement": self.rrp_disagreement,
-            # True when the offers were not all in one currency, so only the
-            # majority currency was ranked.
             "currency_mismatch": self.currency_mismatch,
             "offers": self.offers,
         }
@@ -206,7 +185,6 @@ def normalize_title(title: str, brand: Optional[str] = None) -> List[str]:
     text = _NOISE_RE.sub(" ", title or "").casefold()
 
     if brand:
-        # Remove the brand however it is punctuated.
         brand_pattern = r"[^a-z0-9]+".join(
             re.escape(part) for part in re.split(r"[^a-z0-9]+", brand.casefold()) if part
         )
@@ -246,7 +224,6 @@ def _offer(product: Dict[str, Any]) -> Dict[str, Any]:
         "product_title": product.get("product_title"),
         "product_url": product.get("product_url"),
         "current_price": product.get("current_price"),
-        # Carried so a "from" price is never silently treated as a real one.
         "price_is_from": bool(product.get("price_is_from")),
         "original_price": product.get("original_price"),
         "discount_percent": product.get("discount_percent"),
@@ -277,9 +254,6 @@ def match_across_retailers(
         (Boots), scored 0.91. A wrong match invents a price gap, which is
         worse for this project than missing a real one.
     """
-    # Group by the things that must agree exactly before similarity is even
-    # considered. This also keeps the comparison cheap: titles are only
-    # compared within a bucket, never across the whole catalogue.
     buckets: Dict[Tuple[str, Optional[str]], List[Dict[str, Any]]] = {}
     for product in products:
         brand = (product.get("brand_matched_to") or product.get("brand") or "").casefold()
@@ -289,11 +263,10 @@ def match_across_retailers(
     matches: List[ProductMatch] = []
     unmatched: List[Dict[str, Any]] = []
 
-    # Sort with an explicit key: `size` is None for products that state no
-    # size, and None cannot be compared against a string.
+    # explicit key: `size` is None for sizeless products, and None cannot
+    # be compared against a string
     for (brand, size), bucket in sorted(buckets.items(), key=lambda kv: (kv[0][0], kv[0][1] or "")):
-        # Greedy clustering: each product either joins an existing cluster it
-        # is similar enough to, or starts a new one.
+        # greedy: join a similar-enough cluster, or start a new one
         clusters: List[List[Dict[str, Any]]] = []
         token_cache = {
             id(p): normalize_title(p.get("product_title") or "",
@@ -304,13 +277,9 @@ def match_across_retailers(
         for product in bucket:
             placed = False
             for cluster in clusters:
-                # One retailer sells a given product once. Two of its items
-                # in the same cluster therefore means they are DIFFERENT
-                # products that merely read alike -- Tom Ford Black Orchid at
-                # 50ml, at 100ml, and as a Private Blend all cluster on title
-                # alone. Merging them invents price gaps: one cluster showed
-                # Lookfantastic at 86.40, 108.00 and 290.00 simultaneously
-                # and reported a 208.00 spread that does not exist.
+                # a shop sells a product once, so two of its items in one
+                # cluster means they are different products that read alike.
+                # Merging them invented a 208.00 spread that did not exist.
                 if any(other.get("retailer") == product.get("retailer")
                        for other in cluster):
                     continue
@@ -332,8 +301,7 @@ def match_across_retailers(
                 unmatched.extend(cluster)
                 continue
 
-            # Score the cluster by its weakest pair, so a reported score is a
-            # floor rather than a flattering average.
+            # score on the weakest pair, so it is a floor not an average
             score = 1.0
             for i, a in enumerate(cluster):
                 for b in cluster[i + 1:]:
@@ -341,8 +309,6 @@ def match_across_retailers(
 
             matches.append(ProductMatch(
                 brand=cluster[0].get("brand_matched_to") or cluster[0].get("brand") or brand,
-                # The shortest title is usually the least cluttered with
-                # retailer-specific marketing.
                 title=min((p.get("product_title") or "" for p in cluster), key=len),
                 size=size,
                 score=score,

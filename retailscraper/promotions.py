@@ -5,8 +5,6 @@ property of any one shop, and both adapters use these. They live here rather
 than in an adapter so that adding a retailer never means copying this logic.
 """
 
-from __future__ import annotations
-
 import re
 from typing import Optional
 
@@ -19,21 +17,17 @@ from .models import (
     PROMO_SPEND_THRESHOLD,
 )
 
-# A discount can be written "25%" or "25 percent"; both appear in the wild.
 _PERCENT = r"(?:\d+\s*%|\d+\s*per\s?cent)"
 
-# Words and shapes that indicate text is an actual offer rather than a
-# merchandising badge. Kept deliberately broad -- the cost of letting an
-# oddity through is one reviewable row, while being too strict silently loses
-# real campaigns.
+# Deliberately broad: a stray match costs one reviewable row, while being
+# too strict silently loses real campaigns.
 _OFFER_SIGNAL_RE = re.compile(
     rf"{_PERCENT}|\boff\b|\bsave\b|\bfree\b|\bspend\b|\bgift\b|\bcode\b|"
     r"\bbuy\s*\d|\bdiscount\b|\bhalf price\b|\bbogof\b",
     re.IGNORECASE,
 )
 
-# "Spend £40 and receive X" and "Receive X when you spend £40" are the same
-# offer, so the two words are matched in either order.
+# The same offer either way round, so both orders match.
 _SPEND_RE = re.compile(
     r"\bspend\b.*\b(get|save|receive|choose)\b|\b(get|save|receive|choose)\b.*\bspend\b",
     re.IGNORECASE | re.DOTALL,
@@ -43,22 +37,17 @@ _BUNDLE_RE = re.compile(r"\bbuy\s*\d+\b.*\bget\b|\b\d\s*for\s*\d\b", re.IGNORECA
 _EXPLICIT_GIFT_RE = re.compile(
     r"\bfree gift\b|\bgift with purchase\b|\bcomplimentary\b", re.IGNORECASE
 )
-# "free next day delivery" is a shipping term, not a promotion on the goods.
-# The words may be separated, so allow a short gap.
+# "free next day delivery" is shipping, not a promotion on the goods.
 _FREE_SHIPPING_RE = re.compile(
     r"\bfree\b[\w\s]{0,15}\b(delivery|shipping|returns?|postage)\b", re.IGNORECASE
 )
 _PERCENT_RE = re.compile(_PERCENT, re.IGNORECASE)
-# "half price" / "1/2 price" -- a percentage discount with no number in it.
 _FRACTION_OFF_RE = re.compile(r"\bhalf price\b|\b\d\s*/\s*\d\s*(?:price|off)\b", re.IGNORECASE)
 _CODE_RE = re.compile(r"\bcode\b", re.IGNORECASE)
 
 
-# An optional caller-supplied vocabulary. When set, it REPLACES the built-in
-# rules below rather than adding to them, so a run using a keyword file
-# matches exactly what that file says and nothing else. None means the
-# built-in retail rules are in force, which is the default and the behaviour
-# every existing run keeps.
+# A caller-supplied vocabulary REPLACES the built-in rules rather than
+# adding to them. None means the built-in retail rules are in force.
 _custom_keywords = None
 
 
@@ -89,28 +78,23 @@ def looks_like_offer(text: str) -> bool:
     return bool(_OFFER_SIGNAL_RE.search(text))
 
 
-# A much stricter test than `looks_like_offer`, for when we are scanning a
-# whole page rather than reading a known promo slot. Every alternative below
-# names a concrete mechanic -- a percentage, a money saving, a bundle, a code,
-# a spend threshold, or an explicit gift-with-purchase.
+# Stricter than `looks_like_offer`, for scanning a whole page rather than a
+# known promo slot. Every alternative names a concrete mechanic.
 #
-# Bare "gift" and bare "free" are deliberately absent. On a retailer's offers
-# page they match "gift finder", "gift cards", "gift by occasion" and "Boots
-# Free Online NHS Repeat Prescription Service" -- all navigation, none of them
-# promotions.
+# Bare "gift" and "free" are deliberately absent: on an offers page they
+# match "gift finder", "gift cards" and "Boots Free Online NHS Repeat
+# Prescription Service" -- all navigation.
 _CONFIDENT_OFFER_RE = re.compile(
     rf"{_PERCENT}\s*(?:off|discount)"
     rf"|(?:up\s*to|save|extra|flat)\s*{_PERCENT}"
     rf"|{_PERCENT}\s*(?:off|discount)?\s*(?:selected|when you)"
-    # "half price", and the fraction form UK retailers also use: "1/2 price",
-    # "1/3 off". Boots writes "SAVE UP TO 1/2 PRICE".
+    # the fraction form UK retailers use: Boots writes "SAVE UP TO 1/2 PRICE"
     r"|\bhalf price\b|\b\d\s*/\s*\d\s*(?:price|off)\b"
     r"|\bbogof\b|\bbuy\s*\d+\s*get\b|\b\d\s*for\s*\d\b"
     r"|\bfree gift\b|\bgift with purchase\b|\bcomplimentary\b"
     r"|\bspend\b[^.]{0,40}\b(?:get|save|receive|choose)\b"
-    # A discount code, but not a catalogue number. John Lewis prints
-    # "Product code: 46026731" on every product page, which is an identifier,
-    # not an offer.
+    # a discount code, not a catalogue number -- John Lewis prints
+    # "Product code: 46026731" on every page
     r"|\b(?:use|with|enter)\s+code\b"
     r"|(?<!product )(?<!item )(?<!barcode )\bcode:\s*\w+"
     r"|\bsave\s*[£$€]\s*\d",
@@ -118,11 +102,8 @@ _CONFIDENT_OFFER_RE = re.compile(
 )
 
 
-# A bare discount tier and nothing else: "50% Off", "At Least 30% off",
-# "Up to 40% Off". Retailers use these as BROWSE FILTERS -- "shop by saving"
-# -- linking to /collections/offers-save-30 or /offers-outlet-70. They are
-# navigation, not offers: they promise nothing beyond what each product's own
-# price already says.
+# A bare tier ("50% Off", "At Least 30% off") is a shop-by-saving FILTER,
+# not an offer -- it promises nothing beyond what each price already says.
 _BARE_TIER_RE = re.compile(
     rf"^(?:at\s+least\s+|up\s+to\s+|save\s+)?{_PERCENT}\s*(?:off|discount)?$",
     re.IGNORECASE,

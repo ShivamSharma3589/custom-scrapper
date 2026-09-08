@@ -1,62 +1,34 @@
 """Next adapter.
 
-The retailer that looked impossible. Next sits behind Akamai Bot Manager,
-and the pages that hold products -- brand, listing, search -- answer 403
-"Access Denied" to plain HTTP, to curl with a complete Chrome header set,
-to a warmed-up session carrying Akamai's own cookies, and to a stealth
-browser. Only the homepage and the sitemaps came back.
+Next sits behind Akamai Bot Manager. Its product pages answer 403 to plain
+HTTP, to curl with a full Chrome header set, to a warmed-up session carrying
+Akamai's own cookies, and to a stealth browser. Only the homepage and
+sitemaps came back.
 
-**What actually gets through is the TLS fingerprint, not the headers.**
-Akamai scores the TLS handshake, and every attempt above presented either
-Python's OpenSSL fingerprint or a headless Chromium one. `FetcherSession`
-impersonates a real browser's handshake, and the choice of which browser is
-the whole difference:
+**What gets through is the TLS handshake, not the headers.** `FetcherSession`
+can impersonate a real browser's handshake, and which browser decides it:
 
-    impersonate="firefox"   -> HTTP 200 on brand pages, 403 on /sale
     impersonate="safari"    -> HTTP 200 everywhere            <- used here
+    impersonate="firefox"   -> HTTP 200 on brand pages, 403 on /sale
     impersonate="chrome"    -> HTTP 200, but a 2 KB stub
     impersonate="chrome131" -> HTTP 403
-    impersonate="chrome124" -> HTTP 403
     impersonate="edge"      -> HTTP 403
 
-Chrome fingerprints are the ones Akamai scrutinises, presumably because they
-are what scrapers reach for first. No JavaScript sensor is defeated and no
-challenge is solved: Next simply serves the page to a client whose handshake
-it trusts. robots.txt permits these paths -- only `*/search/search` and
-`*brand-beaverbrooks*` are disallowed, neither of which is used here.
+No JavaScript sensor is defeated and no challenge solved -- Next simply
+serves pages to a client whose handshake it trusts. robots.txt permits these
+paths; only `*/search/search` and `*brand-beaverbrooks*` are disallowed.
 
-**Discovery.** `/brands/<slug>` paginated with `?p=N`, which yields new
-products until it runs out (Estee Lauder ends at page 16 with 443 products).
-Next writes "Estée Lauder" as `este-lauder`, dropping the accent entirely
-rather than folding it to "ee", so neither our slug rule nor a naive accent
-fold produces it -- hence the override below.
-
-**The brands sitemap is not the catalogue.** It lists 1,467 brand pages and
-names only Estee Lauder of the seven we track, which is how this retailer
-came to be written off as stocking one brand. It stocks at least six:
-`/brands/mac` serves 34 products, `/brands/bobbi-brown` 27, `/brands/
-too-faced` 26, and Clinique and Tom Ford have pages too. Only Jo Malone
-returns nothing. `prepare` therefore fetches each brand page rather than
-trusting the index.
+**Discovery** is `/brands/<slug>` paginated with `?p=N`. The slug comes from
+the brand page itself, because Next drops accents entirely: "Estee Lauder" is
+`este-lauder`, not `estee-lauder`.
 
 **Product URLs are opaque** -- `/style/su449110/af1610` names neither brand
-nor product -- so the product sitemap is useless for finding a brand's
-items. The brand listing is the only route, which is why the 403 mattered
-so much.
+nor product -- so the product sitemap cannot find a brand's items and the
+brand listing is the only route.
 
-**Extraction.** Product pages carry a JSON-LD `Product`:
-
-    .name                      -> the title, brand included
-    .brand.name                -> "Estée Lauder", stated
-    .sku                       -> "AF1-610-01"
-    .offers.price / .priceCurrency / .availability
-
-Three `Product` blocks appear on a page and only the first carries `offers`;
-the others repeat the name with nulls, so the one with an offer is the one
-to read.
+Product pages carry a JSON-LD `Product`. Three appear per page and only the
+first has `offers`; the others repeat the name with nulls.
 """
-
-from __future__ import annotations
 
 import json
 import re
@@ -161,13 +133,10 @@ class NextAdapter(RetailerAdapter):
     def prepare(self, brands: Sequence[str]) -> List[str]:
         """Confirm each brand has a Next brand page before crawling.
 
-        The page itself is fetched, not the brands sitemap. The sitemap was
-        the obvious cheap check -- one request for 1,467 brands -- and it was
-        wrong: it lists no page for MAC, Tom Ford, Clinique, Bobbi Brown or
-        Too Faced, yet `/brands/mac` serves 34 products and `/brands/
-        bobbi-brown` serves 27. Reporting "Next does not stock this brand"
-        from an incomplete index is the worst answer this scraper can give,
-        because it looks like a finding rather than a gap.
+        Fetches the page rather than trusting the brands sitemap: that
+        sitemap lists no page for MAC, Tom Ford, Clinique, Bobbi Brown or
+        Too Faced, yet `/brands/mac` serves 34 products. Reporting "not
+        stocked" from an incomplete index looks like a finding, not a gap.
         """
         from scrapling.fetchers import FetcherSession
 
@@ -181,7 +150,6 @@ class NextAdapter(RetailerAdapter):
                 try:
                     response = session.get(url)
                 except Exception:
-                    # Unreachable is not absent; let the crawl try.
                     continue
 
                 if response.status == 404:

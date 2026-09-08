@@ -1,37 +1,29 @@
 """Lookfantastic adapter.
 
-Every selector in this file was read off the live Lookfantastic HTML, not
-assumed. The notes below record what the page actually provides, because that
-is what makes the extraction safe to change later.
-
 Product pages (`/p/<slug>/<id>/`) carry two JSON-LD blocks:
 
-  * The product itself, whose @type tells us the variant situation outright:
-      - `Product`      : a single variant. Has `sku` and `offers`
-                         (price, currency, availability).
-      - `ProductGroup` : multiple variants. Has `productGroupID` and
-                         `hasVariant` (one entry per shade, each with its own
-                         sku and price), and a null `offers`.
-  * A `BreadcrumbList`. One of its entries links to `/c/brands/<slug>/`, which
-    is the retailer's own brand taxonomy. That link -- not the URL slug, not
-    the page title -- is what we treat as proof of brand.
+  * the product, whose @type states the variant situation:
+      `Product`      - one variant, with `sku` and `offers`
+      `ProductGroup` - many variants, with `hasVariant` and a null `offers`
+  * a `BreadcrumbList` whose `/c/brands/<slug>/` link is the retailer's own
+    brand taxonomy. That link -- not the URL slug, not the title -- is what
+    proves the brand.
 
-Prices are NOT in the JSON-LD for the discounted case (it carries only the
-current price), so they are read from `#product-price`, where screen-reader
-labels ("Recommended Retail Price:", "Current price:") identify which number
-is which. Those labels are far more stable than the utility CSS classes
-around them.
+Prices for discounted items are NOT in the JSON-LD, so they come from
+`#product-price`, where screen-reader labels ("Recommended Retail Price:",
+"Current price:") say which number is which. Those labels are far more
+stable than the utility CSS classes around them.
 
-Promotions appear in two structurally distinct places, which is what lets us
-separate product-level offers from site-wide ones without guessing:
+Promotions sit in two distinct places, which is what separates a product's
+own offer from a site-wide one without guessing:
 
-  * `#pap-banner` / `[data-track="promoClick"]` -- the offer that applies to
-    THIS product, with the copy in `data-track-push`.
-  * `a.strip-banner` -- the site header strip, shown on every page. This is a
-    site-wide campaign and must never be recorded as a brand's campaign.
+  * `#pap-banner` / `[data-track="promoClick"]` - applies to THIS product
+  * `a.strip-banner` - the header strip shown on every page, so site-wide
+
+Lookfantastic also truncates some names in its structured data ("Clinique
+Anti" for Anti-Blemish Solutions), so a title is repaired from the page's
+own `<h1>` when the JSON-LD name is a strict prefix of it.
 """
-
-from __future__ import annotations
 
 import json
 import re
@@ -150,15 +142,9 @@ class LookfantasticAdapter(RetailerAdapter):
     def extract_product_links(self, response, brand: Optional[str] = None) -> List[str]:
         """Product URLs from a rendered category page.
 
-        Category pages carry cross-sell carousels above the grid -- beauty
-        boxes, mystery boxes and gift vouchers, none of them the brand being
-        crawled. Without a filter those consume the crawl budget before the
-        real products are reached, and are then rejected as unverifiable
-        brands, so the run does a lot of work to produce nothing.
-
-        Filtering on the brand slug is the same cheap pre-filter the sitemap
-        route uses. It is not verification: the brand is still proved from the
-        breadcrumb on each product page.
+        Filtered on the brand slug to skip the cross-sell carousels above the
+        grid, which would otherwise eat the crawl budget. A cost control, not
+        verification -- the brand is still proved from each product page.
         """
         slug = self._brand_slug(brand) if brand else None
         found = []
@@ -491,19 +477,12 @@ class LookfantasticAdapter(RetailerAdapter):
     def _verify_brand_weakly(
         cls, title: Optional[str], url: str, target_brands: Sequence[str]
     ) -> tuple:
-        """Corroborate one of the REQUESTED brands from the title and the URL.
+        """Corroborate a REQUESTED brand from the title and the URL.
 
-        Only used when the page offers no breadcrumb brand link. Returns
-        (brand, "title_and_url") when a requested brand both starts the title
-        and appears in the URL slug, else (None, "unverified").
-
-        Two properties make this safe enough to use as a fallback. It tests
-        only brands we were already asked about, so it can never invent one.
-        And it needs the retailer to have described the same product the same
-        way twice, independently -- a page that merely mentions a brand in
-        marketing copy satisfies neither condition, and a product whose own
-        name happens to match its slug ("The Summer Edit") is not in the
-        requested list and so cannot match at all.
+        Used only when the page has no breadcrumb brand link. Safe as a
+        fallback because it tests only brands we already asked about -- it
+        cannot invent one -- and needs the retailer to have said the same
+        thing twice, in the title and in the slug.
         """
         if not title or not target_brands:
             return None, "unverified"
@@ -538,21 +517,17 @@ class LookfantasticAdapter(RetailerAdapter):
     def _extract_prices(sel) -> tuple:
         """Read RRP and current price from `#product-price`.
 
-        The block interleaves screen-reader labels with the values:
+        The block interleaves screen-reader labels with values:
 
             <span class="sr-only">Recommended Retail Price:</span>
             <span>£42.00</span>
-            <span class="sr-only">Current price:</span>
-            <span>£31.50</span>
 
-        so we walk the spans in order and let each label claim the next value.
-        Keying on the label text rather than on the utility classes means a
-        restyle does not silently swap the two numbers.
+        so the spans are walked in order and each label claims the next
+        value. Keying on the label rather than the CSS class means a restyle
+        cannot silently swap the two numbers.
 
-        Three layouts occur in practice and all three must work:
-          1. discounted    -- both labels present
-          2. full price    -- only the "Current price:" label
-          3. full price    -- no labels at all, just one bare price span
+        Three layouts occur: both labels, only "Current price:", or no labels
+        and one bare price.
         """
         original = current = None
         currency = None
@@ -622,18 +597,13 @@ class LookfantasticAdapter(RetailerAdapter):
     def _product_title(product_ld: Dict[str, Any], sel) -> str:
         """The product's name, repaired when Lookfantastic truncates it.
 
-        Lookfantastic's structured data cuts some names at a hyphen: the
-        `ProductGroup` for Anti-Blemish Solutions Liquid Makeup publishes
-        `"name": "Clinique Anti"`, and Ultra-Shine Lip Color publishes
-        `"TOM FORD Ultra"`. About 20 of 1,069 products in a full run are
-        affected, and each one is unmatchable against the same product at
-        another retailer.
+        Their structured data cuts some names at a hyphen -- "Clinique Anti"
+        for Anti-Blemish Solutions -- affecting about 20 of 1,069 products,
+        each unmatchable against other retailers.
 
-        The page's own `<h1>` carries the full name, so it is used -- but
-        only when the truncated name is a strict prefix of it. That is the
-        proof that a truncation happened. Any other disagreement between the
-        two is left alone, because then we would be choosing between two
-        things the retailer said rather than repairing one it broke.
+        The `<h1>` has the full name, and is used only when the truncated
+        name is a strict prefix of it. That prefix IS the proof a truncation
+        happened; any other disagreement is left alone.
         """
         name = clean_text(product_ld.get("name")) or ""
         heading = clean_text(" ".join(

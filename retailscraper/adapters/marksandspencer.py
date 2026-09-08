@@ -1,58 +1,30 @@
 """Marks & Spencer adapter.
 
-M&S is the simplest of the browser-free retailers, but it needed the most
-care about *where* to look.
+**Search is off-limits** -- robots.txt disallows `/*search?q=`.
 
-**Search is off-limits.** robots.txt disallows `/*search?q=` outright, so the
-search route that works for ASOS is not available here.
-
-**The sitemap is not the catalogue.** Discovery used to run off
-`uk_sitemap_beauty_products.xml`, filtering URLs whose slug named the brand.
-That was wrong twice over, and both errors pointed the same way -- towards
-reporting products M&S sells as products M&S does not stock:
-
-  * M&S does not put the brand in most product slugs. Estee Lauder's
-    "Advanced Night Repair Eye Cream" lives at `/advanced-night-repair-eye-
-    cream-.../p/hbp...`, with no "estee-lauder" anywhere in it, so a
-    slug filter cannot see it.
-  * The beauty sitemap does not list the beauty catalogue. Across all nine
-    UK product sitemaps -- 29,772 URLs -- exactly 19 mention Clinique and
-    none mention any other ELC brand. M&S's own Clinique page lists 168.
+**The sitemap is not the catalogue.** Discovery used to filter sitemap URLs
+whose slug named the brand, which was wrong twice over: M&S does not put the
+brand in most slugs, and across all nine UK product sitemaps (29,772 URLs)
+only 19 mention Clinique while M&S's own Clinique page lists 168. Both errors
+pointed the same way -- reporting products M&S sells as products it does not.
 
 Discovery is therefore the brand landing page, `/l/beauty/<slug>`, paginated
 with `?page=N`. A brand M&S genuinely does not stock 404s there, which is a
 real answer rather than an empty result that looks like one.
 
-**The listing IS the data.** Each landing page embeds `__NEXT_DATA__`
-carrying 48 complete products -- brand, title, both prices, currency, promo
-label and variant count -- so a brand costs three or four requests instead of
-one per product. `extract_product` below still reads a single product page
-from its JSON-LD, and remains the route for anything that arrives by URL.
+**The listing IS the data.** Each landing page embeds `__NEXT_DATA__` with 48
+complete products, so a brand costs three or four requests instead of one per
+product. `extract_product` still reads a single page for anything arriving by
+URL. Plain HTTP throughout -- no browser needed.
 
-**Plain HTTP is enough.** Neither the landing pages nor the product pages
-need a browser, which makes this the cheapest adapter after AllBeauty.
+**A caveat about titles.** M&S publishes some corrupted names --
+"Multi-DiClinique For Menional" for "Multi-Dimensional" -- in their `<title>`,
+JSON-LD and listing JSON alike. That is their defect, and it is recorded
+verbatim: guessing what a retailer meant to publish is not this scraper's job.
 
-**A caveat about titles.** M&S publishes some corrupted product names --
-"Multi-DiClinique For Menional" where they mean "Multi-Dimensional" -- in
-their `<title>`, their JSON-LD and their listing JSON alike. That is M&S's
-own defect, visible on their live site, and it is recorded verbatim rather
-than repaired: guessing at what a retailer meant to publish is not something
-this scraper should do silently.
-
-Product pages carry:
-
-    JSON-LD Product .brand.name              -> the brand, stated
-                    .sku                     -> the stock code
-                    .offers.priceSpecification.price / min / max
-                    .offers.availability
-    "previousPrice": 26                      -> the was-price
-
-The was-price is NOT in the JSON-LD -- `priceSpecification` holds only the
-current price -- so it is read from the page's embedded state, the same
-split Lookfantastic has.
+Product pages carry JSON-LD `Product` (brand, sku, price, availability). The
+was-price is not in it -- `"previousPrice"` comes from the embedded state.
 """
-
-from __future__ import annotations
 
 import json
 import re

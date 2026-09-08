@@ -1,46 +1,34 @@
 """John Lewis adapter.
 
-The third retailer, and the one that most clearly justifies the adapter
-pattern: it shares no discovery mechanism with either of the others. Every
-detail below was read off the live site.
+**Fetching.** Plain HTTP hangs rather than failing -- worse than a block,
+because it looks like a slow network. Everything uses a browser.
 
-**Fetching.** Plain HTTP hangs -- a request to the sitemap index never
-returns rather than being refused, which is worse than a block because it
-looks like a slow network. A browser session works normally, so
-`configure_session` registers a stealth session and every route uses it.
+**Discovery.** The sitemap shards are gzipped, and a browser asked to
+navigate to a `.gz` starts a download instead of loading a page, so they
+cannot be crawled. Discovery uses brand landing pages, which robots.txt
+allows: `Allow: /brand/*/_/N-*`
 
-**Discovery.** John Lewis publishes a real sitemap, but every shard is
-gzipped, and a browser asked to navigate to a `.gz` starts a download instead
-of loading a page ("Page.goto: Download is starting"), so `SitemapSpider`
-cannot read them. Discovery therefore goes through brand landing pages
-instead, which robots.txt explicitly allows:
+Those need a code John Lewis assigns each brand
+(`/brand/clinique/_/N-1z13ywm`). Codes come from the A-Z brand index in one
+request and are cached on disk. Guessing one returns HTTP 404.
 
-    Allow: /brand/*/_/N-*
+Two traps in that lookup, both of which made a stocked brand read as absent:
+the slug can be percent-encoded (`est%C3%A9e-lauder`), and the catalogue is
+deeper than one page -- John Lewis states `pagesAvailable` on the listing,
+and the crawl uses that rather than a fixed depth.
 
-Those pages need a code John Lewis assigns to each brand
-(`/brand/clinique/_/N-1z13ywm`). The codes are only published in the gzipped
-grid sitemaps, so `_brand_codes` fetches those through the browser's own
-`fetch()` from inside a loaded page -- which is not a navigation, so no
-download is triggered -- and caches the result on disk. Guessing a code is
-not an option: a wrong one returns HTTP 404.
+**Product pages** carry a rich JSON-LD `Product`: `brand` as an explicit
+Brand object, `category` as a real taxonomy path, and `offers` with sku,
+price, currency and availability.
 
-**Product pages** carry a JSON-LD `Product` that is richer than either other
-retailer's:
+The JSON-LD holds only the current price, so the was-price comes from the PDP
+price block (`data-testid="price-prev"` / `"price-now"`). The recommendation
+carousels use `product-card-price-prev` -- a different testid -- so scoping to
+the former keeps a recommended product's discount off this one.
 
-  * `brand` is an explicit `{"@type": "Brand", "name": "Clinique"}` object,
-    so the brand is stated outright rather than inferred from a breadcrumb.
-  * `category` is a real taxonomy path ("Beauty > Skin Care & Treatments >
-    View all Skin Care"), so no separate category lookup is needed here.
-  * `offers` carries sku, price, currency and availability.
-
-The JSON-LD holds only the current price, so the "was" price comes from the
-PDP price block. That block is identified by `data-testid="price-prev"` /
-`"price-now"`; the recommendation carousels on the same page use
-`product-card-price-prev`, a different testid, so scoping to the former keeps
-a recommended product's discount from being attached to this one.
+Sizes are priced separately and shown as "from £19.00", so
+`extract_product_variants` emits one record per size.
 """
-
-from __future__ import annotations
 
 import base64
 import gzip
@@ -404,21 +392,15 @@ class JohnLewisAdapter(RetailerAdapter):
     ) -> Dict[str, Dict[str, str]]:
         """Map each requested brand to its John Lewis brand page.
 
-        Each value holds the page `code` and the `slug` John Lewis itself
-        uses, which is not always the slug we would build: Estee Lauder's
-        page keeps its accent, percent-encoded.
+        Each value holds the page `code` and the `slug` John Lewis uses,
+        which is not always ours -- Estee Lauder keeps its accent,
+        percent-encoded.
 
-        `resolve` controls whether a cache miss is allowed to hit the network.
-        It defaults to False so that callers running inside the crawler never
-        trigger a lookup: resolving needs its own browser session, and
-        starting one inside a running asyncio loop raises
-        "Playwright Sync API inside the asyncio loop" -- which killed an
-        entire seven-brand run because ONE brand could not be resolved and the
-        lookup was retried mid-crawl.
-
-        Only `prepare()` passes resolve=True, and it runs before the crawl
-        starts. A brand that still cannot be found is simply absent from the
-        result; the caller reports it rather than fetching a 404.
+        `resolve` decides whether a cache miss may hit the network, and
+        defaults to False: resolving needs its own browser session, and
+        starting one inside the running crawler raises "Playwright Sync API
+        inside the asyncio loop". Only `prepare()` passes True, before the
+        crawl starts.
         """
         cached = self._load_cached_codes()
         wanted = {self._brand_slug(b) for b in brands}
@@ -596,17 +578,11 @@ class JohnLewisAdapter(RetailerAdapter):
     def campaign_seed_urls(self, brands: Sequence[str]) -> List[str]:
         """None -- the brand listing already carries the campaigns.
 
-        Deliberately empty. John Lewis states a brand's promotions on its
-        brand landing page, which is the same URL `product_listing_urls`
-        returns. Seeding it here as well queues one URL twice with two
-        different callbacks; the crawler deduplicates by URL, so whichever
-        was scheduled first wins and the other silently never runs. When the
-        campaign callback won, the page was fetched, campaigns were recorded,
-        and no products were ever queued -- a run that reported success and
-        returned nothing.
-
-        `parse_listing_page` already extracts campaigns from every listing it
-        visits, so nothing is lost by leaving this empty.
+        Deliberately empty. John Lewis states promotions on the brand landing
+        page, which is the URL `product_listing_urls` already returns. Seeding
+        it here would queue one URL under two callbacks; the crawler
+        deduplicates by URL, so one silently never runs -- and when the
+        campaign callback won, no products were queued at all.
         """
         return []
 
@@ -631,21 +607,17 @@ class JohnLewisAdapter(RetailerAdapter):
     def _one_url_per_product(self, urls: Iterable[str]) -> List[str]:
         """Keep one URL per product id, discarding the other shades.
 
-        John Lewis links every shade separately, all pointing at the same
-        product:
+        John Lewis links every shade separately at the same product id:
 
             /too-faced-cloud-crush-blush/tequila-sunset/p110055590
             /too-faced-cloud-crush-blush/pink-sunset/p110055590
 
-        The crawler deduplicates on URL, so each shade was fetched as if it
-        were a different product and then collapsed to one record afterwards
-        -- a dozen requests to keep one. That waste pushed a seven-brand run
-        into rate limiting: 165 of 372 requests came back 403.
+        The crawler deduplicates on URL, so each shade was fetched and then
+        collapsed to one record -- a dozen requests to keep one, which pushed
+        a run into rate limiting (165 of 372 refused).
 
-        The first URL for each id is kept, exactly as the site published it.
-        Rewriting a shade URL to a bare `<slug>/p<id>` looks equivalent and is
-        not: some products 404 without their shade segment, so an invented URL
-        loses the product entirely.
+        The site's own URL is kept, never rewritten to a bare `<slug>/p<id>`:
+        some products 404 without their shade segment.
         """
         seen: Dict[str, str] = {}
         for url in urls:

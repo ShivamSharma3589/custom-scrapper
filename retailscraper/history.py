@@ -9,8 +9,6 @@ product id, which is stable across runs even when titles and URLs are
 reworded. Campaigns are compared on their deterministic `campaign_id`.
 """
 
-from __future__ import annotations
-
 from dataclasses import dataclass
 from typing import Any, Dict, List, Optional
 

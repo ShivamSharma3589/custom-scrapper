@@ -10,8 +10,6 @@ Each validator takes a `Product` and returns either None (the record is
 fine) or a `RejectedRecord` carrying a machine-readable reason.
 """
 
-from __future__ import annotations
-
 import re
 import unicodedata
 from typing import Callable, List, Optional, Sequence
@@ -34,9 +32,7 @@ REASON_WEAK_BRAND = "weak_brand_evidence"
 # product data. Anything else is corroboration, not proof.
 STRONG_BRAND_EVIDENCE = frozenset({"breadcrumb_link", "microdata_brand", "listing_data"})
 
-# How far the retailer's own advertised discount may drift from the one we
-# compute from the two prices before we treat it as a contradiction. A small
-# tolerance absorbs the retailer's own rounding (e.g. 25.02% shown as 25%).
+# Tolerance for the retailer's own rounding, e.g. 25.02% shown as 25%.
 DISCOUNT_TOLERANCE_PCT = 1.0
 
 
@@ -123,15 +119,9 @@ def check_discount_consistency(
     return None
 
 
-#: Corrections applied to the brand names a USER types, keyed on the folded,
-#: punctuation-stripped form. This normalises the question, never the
-#: retailer's answer -- correcting our own input is safe, while "correcting"
-#: what a retailer says a product is would be exactly the fuzzy matching that
-#: turns Tommy Jeans into Tom Ford.
-#:
-#: "Bobbie Brown" is here because the original brief was written that way.
-#: Every retailer spells it "Bobbi Brown", so the typo silently returned zero
-#: products at all six and read as "not stocked".
+#: Fixes for brand names a USER types. This corrects the question, never
+#: the retailer's answer -- "correcting" what a shop says a product is would
+#: be the fuzzy matching that turns Tommy Jeans into Tom Ford.
 BRAND_ALIASES = {
     "bobbie brown": "Bobbi Brown",
     "bobby brown": "Bobbi Brown",
@@ -195,10 +185,8 @@ def suggest_brand(wanted: str, seen: Sequence[str]) -> Optional[str]:
     best, best_score = None, 0.0
     for candidate in seen:
         folded = _fold_accents(candidate).casefold()
-        # Never suggest the name that was already asked for. Doing so
-        # produced "'Jo Malone' found nothing, but John Lewis stocks
-        # 'Jo Malone'" -- advice that cannot be acted on, and which hides the
-        # real reason (the retailer files it under a different slug).
+        # never suggest the name already asked for -- "'Jo Malone' found
+        # nothing, but John Lewis stocks 'Jo Malone'" helps nobody
         if folded == target:
             continue
         score = SequenceMatcher(None, target, folded).ratio()
@@ -323,13 +311,11 @@ def check_variant_coherence(
     if not product.sku or not product.product_id:
         return None
 
-    # Some retailers number stock units separately from product pages, so the
-    # two identifiers are never expected to match and comparing them would
-    # reject every record. The adapter declares which scheme it uses.
+    # some retailers number stock units separately, so comparing them would
+    # reject every record -- the adapter declares which scheme it uses
     if not product.sku_matches_product_id:
         return None
 
-    # Only single-variant products are expected to match exactly.
     if product.variant_count is not None and product.variant_count > 1:
         return None
 
@@ -343,8 +329,7 @@ def check_variant_coherence(
     return None
 
 
-# Order affects only which reason is reported first; each validator is
-# independent. Adapters may extend this list with retailer-specific rules.
+# Order decides only which reason is reported first.
 DEFAULT_VALIDATORS: List[Callable[[Product, Sequence[str]], Optional[RejectedRecord]]] = [
     check_title,
     check_price_present,

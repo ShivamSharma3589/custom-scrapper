@@ -1,26 +1,17 @@
-"""Scheduled sweep: every retailer, one after another, one exit code.
+"""Run every retailer in sequence and return one exit code.
 
-This is what cron calls. It exists so the schedule is a single line:
+    python run_all.py
 
-    0 6,18 * * *  cd /srv/scraper && .venv/bin/python run_all.py
-
-**Retailers run in sequence, never together.** Three browser-driven crawls at
-once starved DNS badly enough that a 54-minute run took 30 hours. The sweep is
-slow -- roughly three hours -- and that is the cost of not being blocked.
-
-**A blocked retailer must not look like a successful one.** Each retailer's
-verdict comes from `run.py`, which now exits non-zero when too many requests
-were refused or a stocked brand came back empty. This script rolls those up:
+**Never in parallel.** Three browser-driven crawls at once starved DNS badly
+enough to turn a 54-minute run into 30 hours.
 
     0  every retailer produced usable data
     1  some failed          -- load the good ones, alert
     2  every retailer failed -- alert, load nothing
 
-A retailer that fails does not stop the sweep. The remaining ones still run,
-because a Boots outage is no reason to skip Lookfantastic.
+A failed retailer does not stop the sweep: a Boots outage is no reason to
+skip Lookfantastic.
 """
-
-from __future__ import annotations
 
 import argparse
 import subprocess
@@ -34,25 +25,21 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 from retailscraper.adapters.base import available_adapters, get_adapter  # noqa: E402
 from retailscraper.runs import retailer_folder_name, utc_now  # noqa: E402
 
-#: The brands this sweep tracks. One list, so a brand is added in one place
-#: rather than in eight cron lines.
+#: The brands this sweep tracks, in one place.
 DEFAULT_BRANDS = [
     "Clinique", "MAC", "Tom Ford", "Jo Malone",
     "Estee Lauder", "Bobbi Brown", "Too Faced",
 ]
 
-#: Retailers left out of the automatic sweep, and why. Kept here rather than
-#: deleted so the exclusion is visible and reversible.
+#: Retailers left out of the sweep, and why -- listed rather than deleted
+#: so the exclusion is visible and reversible.
 EXCLUDED: Dict[str, str] = {
     "next": "refuses roughly four requests in five; revisit from the UK server",
 }
 
-#: How long a single retailer may take before the sweep gives up on it.
-#: Without a limit, `subprocess.run` waits forever: a browser session that
-#: hangs -- which is what a stalled Playwright page looks like -- would block
-#: the sweep indefinitely, and every later cron firing would pile another
-#: sweep on top of it. Generous, because John Lewis at 30s per request is
-#: slow but not stuck.
+#: How long one retailer may take before the sweep gives up. Without it a
+#: hung browser blocks the sweep for ever. Generous, because John Lewis at
+#: 30s per request is slow but not stuck.
 DEFAULT_TIMEOUT_SECONDS = 4 * 60 * 60
 
 #: Retailers allowed longer, because their catalogue genuinely warrants it.
@@ -60,10 +47,8 @@ TIMEOUT_SECONDS: Dict[str, int] = {
     "johnlewis": 6 * 60 * 60,
 }
 
-#: Retailers that refuse often but still deliver, with the share of refusals
-#: tolerated before their run is called a failure. John Lewis produced 770
-#: products across seven brands in a run that refused 33.8% of its requests,
-#: which the default limit would have thrown away.
+#: Retailers that refuse often but still deliver. John Lewis produced 770
+#: products in a run that refused 33.8% of its requests.
 REFUSAL_LIMITS: Dict[str, float] = {
     "johnlewis": 0.45,
 }
@@ -111,10 +96,8 @@ def run_one(
 ) -> subprocess.CompletedProcess:
     """Run one retailer as its own process.
 
-    A separate process rather than an in-process call, for one reason that
-    matters unattended: the browser sessions these adapters open do not always
-    shut down cleanly, and one retailer's stuck session would otherwise take
-    the whole sweep with it. A crashed child costs one retailer.
+    A separate process because these browser sessions do not always shut down
+    cleanly -- a crashed child then costs one retailer, not the sweep.
     """
     command = [
         sys.executable, str(Path(__file__).resolve().parent / "run.py"),
@@ -130,10 +113,8 @@ def run_one(
     try:
         return subprocess.run(command, timeout=timeout)
     except subprocess.TimeoutExpired:
-        # The child is killed by the timeout, but its lock file outlives it:
-        # the process never reached its `finally`. Clearing it here keeps the
-        # next scheduled run from skipping this retailer for six hours over a
-        # hang that is already over.
+        # the killed child never reached its `finally`, so its lock outlives
+        # it -- clear it or the next run skips this retailer for six hours
         print(f"  {name} exceeded {timeout / 3600:.0f}h and was stopped",
               file=sys.stderr)
         lock = out_dir / f".{retailer_folder_name(get_adapter(name))}.lock"
@@ -176,8 +157,7 @@ def main(argv=None) -> int:
         print(f"--- {adapter.display_name}: exit {code} after {minutes:.0f} min\n",
               flush=True)
 
-    # Exit 3 means the retailer was skipped because another run of it was
-    # still going. That is the lock working, not a failure of this sweep.
+    # exit 3 is the lock working, not a failure
     failed = [n for n, c in results.items() if c not in (0, 3)]
     skipped = [n for n, c in results.items() if c == 3]
 

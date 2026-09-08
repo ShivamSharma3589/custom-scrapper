@@ -1,31 +1,22 @@
 """Boots adapter.
 
-Boots differs from Lookfantastic in every way that matters, which is exactly
-why it is a useful second retailer: it proves the framework is generic rather
-than shaped around one site. All three differences were found by inspecting
-the live site, not assumed.
+Three things differ from every other retailer here, all found by inspecting
+the live site:
 
-1. **It needs a real browser.** Boots sits behind Imperva bot protection.
-   Plain HTTP -- even with convincing headers -- gets a "Pardon Our
-   Interruption" challenge page returned as HTTP 200, which is worse than a
-   403 because it looks like success. `configure_session` therefore registers
-   a stealth browser session, and `looks_blocked` lets the crawler notice a
-   challenge page rather than parse it as a product.
+**It needs a real browser.** Boots sits behind Imperva. Plain HTTP gets a
+"Pardon Our Interruption" challenge returned as HTTP 200 -- worse than a 403,
+because it looks like success. `looks_blocked` lets the crawler spot a
+challenge page rather than parse it as a product.
 
-2. **Its sitemap is unreachable.** The sitemap URL in robots.txt returns the
-   same challenge page even through the browser, so discovery goes through
-   paginated brand listing pages instead
-   (`/<brand>/<brand>-full-range?paging.index=N`), which do work.
+**Its sitemap is unreachable.** robots.txt names one, but it returns the same
+challenge even through the browser, so discovery uses paginated brand listings
+(`/<brand>/<brand>-full-range?paging.index=N`).
 
-3. **It publishes microdata, not JSON-LD.** There is no
-   `application/ld+json` anywhere on a product page. The same information is
-   present as schema.org microdata (`itemprop`) on meta/span/link elements,
-   which is just as authoritative and just as stable.
+**It publishes microdata, not JSON-LD.** No `application/ld+json` anywhere;
+the same facts are in schema.org `itemprop` attributes.
 
 Product URLs are `https://www.boots.com/<slug>-<numeric id>`.
 """
-
-from __future__ import annotations
 
 import re
 from datetime import datetime, timezone

@@ -1,17 +1,14 @@
 """Report what changed between two runs of the same retailer.
 
-    # explicit files
-    python changes.py output/history/lookfantastic_clinique_2026-08-30.json \
-                      output/lookfantastic_clinique.json
+    # the two most recent scheduled runs
+    python changes.py --latest --retailer lookfantastic
 
-    # or let it find the two most recent archived runs
-    python changes.py --latest --retailer lookfantastic --brands Clinique
+    # or name the files
+    python changes.py before.json after.json
 
-Run `run.py --archive` to keep a timestamped copy of each run, which is what
-gives this something to compare against.
+Every run writes its own timestamped folder, so there is always something to
+compare against.
 """
-
-from __future__ import annotations
 
 import argparse
 import csv
@@ -48,17 +45,10 @@ def parse_args(argv=None) -> argparse.Namespace:
 
 
 def find_latest_run_folders(output_dir: Path, retailer: str, brands) -> list:
-    """The two most recent scheduled runs of one retailer.
+    """The two most recent runs of one retailer.
 
-    Scheduled runs live at `<retailer>/YYYY/MM/DD/HH-MM-SS/`, which sorts
-    chronologically as a path, so the newest two are the last two. This is
-    where a cron job puts its results, and without it `--latest` kept
-    comparing whatever happened to be in `output/history/` -- on this machine
-    a pair of runs from the first of the month, while the scheduled runs it
-    should have been reading went unnoticed beside them.
-
-    Each folder holds one result document plus a manifest; the manifest is
-    metadata about the run, not a run, so it is skipped.
+    Runs live at `<retailer>/YYYY/MM/DD/HH-MM-SS/`, which sorts
+    chronologically as a path, so the newest two are the last two.
     """
     if not output_dir.exists():
         return []

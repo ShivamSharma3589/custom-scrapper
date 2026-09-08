@@ -1,53 +1,31 @@
 """Amazon UK adapter.
 
-The crawl works. The data does not — from a non-UK IP — and that distinction
-is the whole point of this adapter's design.
+The crawl works; the data does not, from a non-UK IP -- and that distinction
+shapes this whole adapter.
 
-**Amazon prices by the visitor's location, not by the domain.** Requesting
-amazon.co.uk from outside the UK returned international pricing: this adapter
-was developed from India and every price came back as `INR 4,239.84`.
-
-`i18n-prefs=GBP` -- Amazon's own currency preference, the cookie its currency
-selector sets -- fixes the currency, and the search page went from zero pound
-signs to 507 of them. It has to be set as a real browser cookie: this adapter
-passed it in `extra_headers` as `Cookie:` for months and it did nothing,
-because the browser context keeps its own cookie jar and overrides the
-header. Every run therefore saw local pricing, refused every record on the
-guard below, and read as "Amazon stocks none of these brands".
+**Amazon prices by the visitor's location, not by the domain.** Developed
+from India, every price came back as `INR 4,239.84`. The `i18n-prefs=GBP`
+cookie fixes the currency, but it has to be a real browser cookie: passed as
+a `Cookie:` header it is silently overridden by the browser's own jar, and
+every run then saw local pricing and read as "Amazon stocks nothing".
 
 Currency is not catalogue. Amazon still varies which offers it shows by
-region, so a UK proxy is still what makes the data match what a UK shopper
-sees. The guard stays either way.
+region, so a UK proxy is what makes the data match what a UK shopper sees.
+Either way this adapter **refuses to emit a record priced in anything but
+GBP**, rather than publishing plausible nonsense.
 
-Those are real numbers, correctly extracted, and completely wrong for a UK
-pricing report — the exact "confident nonsense" failure this project exists
-to prevent. So this adapter **refuses to emit a record whose price is not in
-the expected currency**, and says so loudly, rather than publishing plausible
-figures. Point it through a UK proxy (Scrapling's stealth session takes a
-`proxy=` argument) and it produces correct data unchanged.
+Verified on the live site: robots.txt permits `/dp/` and `/s?`; a stealth
+browser reaches both and plain HTTP returns a stub; there is NO JSON-LD
+anywhere, so extraction is DOM-class based and will need revisiting when
+Amazon changes its markup.
 
-What was verified on the live site:
+Two deliberate omissions:
 
-  * robots.txt permits `/dp/` product pages and `/s?` search; only specific
-    sub-paths like `/dp/product-availability/` are disallowed.
-  * A stealth browser reaches both; plain HTTP returns a stub.
-  * A search page carries 60 result cards, each with `data-asin`, a
-    `[data-cy="title-recipe"]` whose first line is the brand, `.a-price` for
-    the current price and `.a-text-price` for the was-price.
-  * There is NO JSON-LD anywhere on Amazon, so extraction is DOM-class based
-    and will need revisiting when Amazon changes its markup.
-
-Two things this adapter deliberately does not do:
-
-  * It does not read the "other sellers" panel. One ASIN can be sold by many
-    merchants at different prices; the card price is the buy-box price, and
-    that is what a shopper sees. Capturing every seller is a different job.
-  * It does not treat its brand evidence as strong. Amazon's brand line is a
-    rendered attribute, not structured data, so `--strict-brand` will reject
-    these records. That is correct: marketplace listings are inconsistent.
+  * the "other sellers" panel is not read -- one ASIN has many merchants at
+    different prices, and the card price is the buy-box price a shopper sees
+  * brand evidence is not treated as strong, because Amazon's brand line is
+    a rendered attribute rather than structured data
 """
-
-from __future__ import annotations
 
 import re
 from datetime import datetime, timezone
@@ -99,35 +77,18 @@ class AmazonAdapter(RetailerAdapter):
     listing_page_size = 60
 
     def __init__(self) -> None:
-        # Counts records dropped for being priced in the wrong currency, so
-        # `prepare()` and the run summary can report the real reason a run
-        # returned nothing.
+        # counted so a run that returns nothing can say why
         self.wrong_currency_seen = 0
-        # Sponsored placements carry the ad label where the brand belongs.
         self.sponsored_skipped = 0
-        # Products Amazon lists but does not itself offer: only marketplace
-        # sellers have them, so there is no comparable price.
         self.no_buy_box_skipped = 0
         self.currencies_seen: set = set()
 
     def configure_session(self, manager) -> None:
         """A stealth browser asking Amazon for sterling.
 
-        `i18n-prefs` is Amazon's own currency preference, the cookie its
-        currency selector sets. With it, amazon.co.uk quotes GBP even when
-        the request comes from outside the UK -- the search page went from
-        zero pound signs to 507 of them.
-
-        It has to be a real browser cookie, not a `Cookie:` header. This
-        adapter passed one in `extra_headers` for months and it did nothing:
-        the browser context keeps its own cookie jar and overrides the
-        header, so every run saw local pricing and refused every record,
-        which read as "Amazon stocks none of these brands".
-
-        Currency is not the same as catalogue. Amazon still varies which
-        offers it shows by region, so a UK proxy remains the way to see what
-        a UK shopper sees; add `proxy="http://user:pass@endpoint:port"` here.
-        The currency guard in `extract_product` stays either way.
+        `i18n-prefs` must be a real browser cookie -- as a `Cookie:` header
+        the browser's own jar overrides it. Add
+        `proxy="http://user:pass@endpoint:port"` here for a UK IP.
         """
         from scrapling.fetchers import AsyncStealthySession
 
@@ -163,22 +124,14 @@ class AmazonAdapter(RetailerAdapter):
     ) -> List[ListingPage]:
         """Beauty search for one brand, asking Amazon to filter to it.
 
-        `i=beauty` scopes to the beauty department, which keeps a query like
-        "MAC" from returning laptops. `rh=p_89:<brand>` is Amazon's own brand
-        facet, and where it applies it makes the result far cleaner: a plain
-        search for "Clinique" returned 16 Clinique products among 44 cards on
-        page one and then drifted entirely off-brand -- page two was Medik8,
-        Liz Earle and e.l.f. -- while the faceted search returned 16 cards,
-        all of them Clinique.
+        `i=beauty` stops a query like "MAC" returning laptops.
+        `rh=p_89:<brand>` is Amazon's brand facet.
 
-        **Amazon applies the facet only when it recognises the value, and
-        says nothing when it does not.** Asking for "Estee Lauder" returns 20
-        cards of which 6 are the brand, and the accented spelling behaves
-        identically, so this is the facet being dropped rather than a
-        spelling mismatch. Those runs fall back to plain-search behaviour and
-        the brand check below is what keeps them honest -- which is why that
-        check stays regardless of the facet, and why per-brand counts vary so
-        widely (143 Tom Ford, 2 Estee Lauder in one sweep).
+        Amazon applies that facet only when it recognises the value, and says
+        nothing when it does not -- "Estee Lauder" comes back unfiltered.
+        Those searches fall back to plain-search noise, which is why the
+        brand check below stays regardless, and why per-brand counts vary so
+        widely (143 Tom Ford against 2 Estee Lauder in one sweep).
         """
         query = re.sub(r"\s+", "+", brand.strip())
         facet = quote(brand.strip())
@@ -257,14 +210,9 @@ class AmazonAdapter(RetailerAdapter):
             current, currency = self._price(card, ".a-price .a-offscreen")
             was, was_currency = self._price(card, ".a-text-price .a-offscreen")
             if current is None:
-                # Half of Amazon's Clinique cards have no price node at all:
-                # they read "No featured offers available" and then a figure
-                # from a marketplace seller. That number is the cheapest
-                # third-party offer, not the buy-box price a shopper is
-                # shown, and mixing the two would compare different things.
-                # The card is skipped, as documented -- but counted, because
-                # eight silently-dropped products look identical to a brand
-                # Amazon does not stock.
+                # "No featured offers available" -- the figure shown is a
+                # marketplace seller's, not the buy-box price. Skipped, but
+                # counted: silent drops look like an unstocked brand.
                 if _NO_BUY_BOX_RE.search(card.get_all_text() or ""):
                     self.no_buy_box_skipped += 1
                 continue

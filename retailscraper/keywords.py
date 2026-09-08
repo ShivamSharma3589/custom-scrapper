@@ -1,38 +1,19 @@
 """Loading a custom offer vocabulary from a file.
 
-The built-in offer detection in `promotions.py` knows retail wording -- "25%
-off", "buy 2 get 1", "free gift with purchase". A different vertical uses
-different language: a betting site advertises "free spins", "no deposit" and
-"5x wager", none of which the retail rules would recognise as an offer.
+The built-in rules in `promotions.py` know retail wording -- "25% off",
+"buy 2 get 1". A different vertical uses different language: a betting site
+says "free spins", "no deposit", "5x wager".
 
-A keyword file replaces that vocabulary. Replaces, not extends: if you supply
-your own list, only your list is used, so you can see exactly what you are
-matching without the built-in rules quietly widening it.
+A keyword file REPLACES that vocabulary rather than extending it, so only
+your list is used and nothing quietly widens it.
 
-Two formats are accepted.
+Two formats: plain text one pattern per line with `#` comments, or JSON as
+`{"name": ..., "keywords": [...]}`.
 
-Plain text, one pattern per line, `#` for comments:
-
-    # black-friday.txt
-    black friday
-    cyber monday
-    doorbuster
-    [0-9]+% off
-
-Or JSON, when you want to name the set:
-
-    {
-      "name": "black-friday",
-      "keywords": ["black friday", "cyber monday", "[0-9]+% off"]
-    }
-
-Each keyword is a regular expression, so "bet .* get" and "[0-9]+x wager"
-work as written. Patterns are matched case-insensitively, and a pattern made
-only of ordinary words is wrapped in word boundaries so "bonus" does not
-match "bonuses" the way a bare substring search would.
+Each keyword is a regular expression, matched case-insensitively. A pattern
+of ordinary words is wrapped in word boundaries, so "bonus" does not match
+"bonuses".
 """
-
-from __future__ import annotations
 
 import json
 import re

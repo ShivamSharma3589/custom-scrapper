@@ -1,22 +1,17 @@
 """Everything a run needs to be repeatable, traceable and safe to schedule.
 
-The scraper was built to be driven by hand: one command, one look at the
-output, a person deciding whether the result looked right. A cron job has
-nobody doing that last part, so this module supplies what the person used to:
+Run by hand, a person looks at the output and decides whether it seems
+right. A scheduled run has nobody doing that, so this module supplies it:
 
-  * a folder per run, so a new run never overwrites an older one
+  * a folder per run, so runs never overwrite each other
   * a log beside the data it produced
   * a manifest saying what happened, including when it went wrong
   * a verdict, so a blocked run exits non-zero instead of reporting success
   * a lock, so two runs of one retailer never compete for the network
 
-The verdict is the important one. Before this, every run exited 0 -- including
-a Next run that had 1,501 of its 1,840 requests refused and produced five
-products. Cron would have called that a success and a loader would have pushed
-a near-empty dataset into the warehouse as though it were real.
+The verdict matters most: before it, every run exited 0 -- including one
+that had 1,501 of its 1,840 requests refused and produced five products.
 """
-
-from __future__ import annotations
 
 import json
 import logging
@@ -117,8 +112,8 @@ def open_run_log(folder: Path, level: int = logging.INFO) -> logging.Handler:
     handler.setLevel(level)
     root = logging.getLogger()
     root.addHandler(handler)
-    # Without this the root logger's default level (WARNING) discards the
-    # INFO records the crawler emits, and run.log ends up holding only errors.
+    # without this the root level (WARNING) discards the crawler's INFO
+    # records and run.log holds only errors
     if root.level > level:
         root.setLevel(level)
     return handler
@@ -203,8 +198,7 @@ def run_lock(base: Path, adapter) -> Iterator[Path]:
         try:
             age = utc_now().timestamp() - path.stat().st_mtime
         except OSError:
-            # It vanished between the failed claim and the stat: whoever held
-            # it has just finished, so try once more.
+            # gone between the claim and the stat -- whoever held it finished
             age = None
         if age is not None and age < STALE_LOCK_SECONDS:
             held = path.read_text(encoding="utf-8", errors="replace").strip()
@@ -212,8 +206,7 @@ def run_lock(base: Path, adapter) -> Iterator[Path]:
                 f"{adapter.display_name} is already running "
                 f"({held or 'no details'}, {int(age / 60)} min ago)"
             )
-        # Older than any real run, so the previous process died without
-        # releasing it. Say so rather than silently reclaiming.
+        # older than any real run, so the previous process died
         logging.getLogger(__name__).warning(
             "removing stale lock %s (%s hours old)", path, int((age or 0) / 3600)
         )
@@ -232,12 +225,9 @@ def run_lock(base: Path, adapter) -> Iterator[Path]:
 
 # --- verdict --------------------------------------------------------------
 
-#: Statuses that mean "we were turned away". 404 is deliberately absent: it
-#: means the page is not there, which is an answer rather than a refusal.
-#: Counting it failed a correct run -- asking M&S for Tom Ford, which it does
-#: not stock, 404s all four of its listing pages and scored 80% "refused".
-#: A retailer that soft-blocks with 404s is still caught, by the separate
-#: check for a stocked brand returning nothing.
+#: Statuses meaning "turned away". 404 is deliberately absent -- it means
+#: the page is not there, which is an answer. Counting it failed a correct
+#: run: M&S 404s all four listing pages for a brand it does not stock.
 REFUSAL_STATUSES = (403, 429, 503)
 
 
@@ -298,19 +288,13 @@ def verdict(
     if products == 0 and brands_expected:
         return STATUS_FAILED, "no products at all"
 
-    # A campaigns-only run has no products to judge, so without this it
-    # reported success however little it found. A retailer redesign that
-    # breaks the offers-hub selector would return zero campaigns and exit 0
-    # -- the same silent success the exit codes exist to prevent, just in
-    # the other output mode. `campaigns` is None for a normal run, where the
-    # product checks above already cover it.
+    # a campaigns-only run has no products to judge, so without this it
+    # reported success however little it found. None on a normal run.
     if campaigns is not None and campaigns == 0:
         return STATUS_FAILED, "no campaigns found on a campaigns-only run"
 
-    # A crawl that was cut short is not a successful crawl. Where the
-    # retailer publishes its own total, collecting a fraction of it means
-    # pagination was blocked or a route broke -- and the run would otherwise
-    # report success on a fifth of the catalogue.
+    # a crawl cut short is not a successful crawl: collecting a fraction of
+    # the retailer's own total means pagination was blocked or a route broke
     if expected_products and products < expected_products * MIN_COVERAGE:
         return STATUS_FAILED, (
             f"collected {products} of the {expected_products} products the "
@@ -358,8 +342,7 @@ def build_manifest(
         "status": status,
         "reason": reason,
         "products": products,
-        # What the retailer says it has, where it says so at all. The gap
-        # between this and `products` is the run's real coverage.
+        # the gap between this and `products` is the run's real coverage
         "expected_products": expected_products,
         "campaigns": campaigns,
         "rejected": rejected,

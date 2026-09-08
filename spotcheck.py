@@ -9,8 +9,6 @@ of internal validation can do on its own.
     python spotcheck.py --retailer lookfantastic --from-output output/lf.json --sample 10
 """
 
-from __future__ import annotations
-
 import argparse
 import json
 import random

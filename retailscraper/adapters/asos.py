@@ -1,42 +1,20 @@
 """ASOS adapter.
 
-ASOS is a search-driven retailer: there is no per-brand catalogue URL, but
-`/search/?q=<brand>&page=N` is permitted by robots.txt and embeds its full
-result set in the page as data. So, like AllBeauty, the listing IS the
-product data and no product page is ever fetched.
+Search-driven: no per-brand catalogue URL, but `/search/?q=<brand>&page=N`
+is allowed by robots.txt and embeds its whole result set as data. Like
+AllBeauty, the listing IS the data -- no product page is ever fetched.
 
-Four things were established by inspecting the live site, and each one is a
-trap if assumed rather than checked.
+Four things that bite if assumed:
 
-**1. Plain HTTP hangs.** A request to robots.txt never returns rather than
-being refused -- the same tarpit as John Lewis. Everything uses a browser.
+  * plain HTTP hangs rather than failing, so everything uses a browser
+  * the embedded blob is not valid JSON -- it holds `\'`, which json.loads
+    rejects, so it is unescaped first
+  * `price` is the WAS price; `reducedPrice` is what you pay
+  * search is not a brand filter -- "Tom Ford" returns Tommy Jeans, so every
+    result is checked against its own `brandName`
 
-**2. The embedded blob is not valid JSON.** It sits in a JavaScript string
-context, so a product called
-
-    Clinique Chubby Stick Cheek Colour Balm- Amp\\' Up Apple
-
-contains `\\'`, which `json.loads` rejects outright. Unescaping it first is
-the difference between 72 products and an exception that looks like "ASOS
-stocks nothing".
-
-**3. `price` is the WAS price, not the current one.** On a reduced item ASOS
-reports `price: 50` and `reducedPrice: 39.99`. Reading `price` as the current
-price would report every discounted product at full price -- the exact
-failure this project exists to prevent. When `reducedPrice` is absent,
-`price` is the only price and there is no discount.
-
-**4. Search is not a brand filter.** Asking for "Tom Ford" returns 54
-products, none of them Tom Ford: Tommy Jeans, Tommy Hilfiger, Toms. ASOS
-simply does not stock the brand, and the query fuzzy-matched. Every result is
-therefore filtered on its own `brandName` field before becoming a record.
-
-Coverage, measured: Clinique 179, MAC 402, Estee Lauder 107, Bobbi Brown 171,
-Too Faced 142 (filed as "Too Faced Cosmetics"). Tom Ford and Jo Malone are
-not stocked.
+Not stocked: Tom Ford, Jo Malone.
 """
-
-from __future__ import annotations
 
 import json
 import re
@@ -64,12 +42,8 @@ _PAGE_SIZE = 72
 #: "179 styles found" -- the total behind a search, used only for logging.
 _TOTAL_RE = re.compile(r"(\d[\d,]*)\s+styles found", re.IGNORECASE)
 
-#: The storefront's own declaration of which currency its prices are in:
-#:     "currency":{"currency":"GBP","symbol":"£",...,"isPrimary":true,...}
-#: ASOS geo-prices like Amazon does -- a product page fetched from outside the
-#: UK can come back quoting "$67.89" -- so the currency is READ, never
-#: assumed. Hardcoding GBP would label a foreign-currency price as sterling,
-#: which is worse than returning nothing.
+#: The storefront states its own currency. ASOS geo-prices, so it is read
+#: rather than assumed -- a page from outside the UK can quote "$67.89".
 _CURRENCY_RE = re.compile(r'"currency"\s*:\s*\{[^}]*?"currency"\s*:\s*"([A-Z]{3})"')
 
 
@@ -81,22 +55,18 @@ class AsosAdapter(RetailerAdapter):
     domain = "www.asos.com"
     display_name = "ASOS"
 
-    # Discovery is the search endpoint, not a sitemap: ASOS publishes one but
-    # it covers the whole catalogue with no brand scoping, which would mean
-    # walking hundreds of thousands of URLs to find a few hundred.
+    # ASOS's sitemap covers the whole catalogue with no brand scoping, so
+    # discovery uses search instead.
     sitemap_urls: List[str] = []
 
-    # The search payload carries no category for a product ("productType" is
-    # the literal string "Product"), so a category filter cannot be honoured.
+    # The search payload carries no category, so --categories cannot work.
     supports_categories = False
 
-    #: The only currency this adapter will publish. ASOS geo-prices, so a
-    #: storefront serving anything else is refused rather than relabelled.
+    #: The only currency this adapter will publish.
     EXPECTED_CURRENCY = "GBP"
 
     def __init__(self) -> None:
-        # Counts pages refused for quoting a non-UK currency, so a run that
-        # returns nothing reports the real reason.
+        # so a run that returns nothing can say why
         self.wrong_currency_pages = 0
         self.currencies_seen: set = set()
 
@@ -147,19 +117,12 @@ class AsosAdapter(RetailerAdapter):
     def extract_products_from_listing(
         self, response, brand: Optional[str] = None
     ) -> List[Product]:
-        """Turn an ASOS search page into Product records.
-
-        `brand` is the brand this search was for. Results are filtered against
-        it on their own `brandName`, because the query is a search box and not
-        a filter -- see the module docstring.
-        """
+        """Turn an ASOS search page into Product records."""
         raw_products = self._embedded_products(response)
         if not raw_products:
             return []
 
-        # The storefront states its own currency. A page quoting anything but
-        # sterling is not UK pricing, and publishing it would corrupt every
-        # comparison -- so the whole page is refused rather than relabelled.
+        # refuse the whole page rather than publish non-UK prices
         currency = self.page_currency(response)
         if currency:
             self.currencies_seen.add(currency)
@@ -173,9 +136,7 @@ class AsosAdapter(RetailerAdapter):
         products = []
         for raw in raw_products:
             vendor = clean_text(raw.get("brandName"))
-            # A search for "Tom Ford" returns Tommy Jeans. Drop anything whose
-            # own brand field does not map to what we asked for; validation
-            # still proves the brand afterwards.
+            # a search for "Tom Ford" returns Tommy Jeans
             if targets and (not vendor or match_brand(vendor, targets) is None):
                 continue
             product = self._product_from_json(raw, vendor, now)
@@ -207,7 +168,6 @@ class AsosAdapter(RetailerAdapter):
         return Product(
             retailer=self.display_name,
             brand=vendor,
-            # ASOS states the brand as its own field on every search result.
             brand_verified_by="asos_brand_field",
             product_id=str(product_id),
             product_title=title,
@@ -215,8 +175,7 @@ class AsosAdapter(RetailerAdapter):
             source_url=url,
             sku=str(raw["productCode"]) if raw.get("productCode") else None,
             current_price=current,
-            # `hasMultiplePrices` means the colours behind this tile are not
-            # all the same price, so the quoted figure is a from-price.
+            # the colours behind this tile are not all the same price
             price_is_from=bool(raw.get("hasMultiplePrices")),
             original_price=original,
             discount_amount=(
@@ -229,12 +188,9 @@ class AsosAdapter(RetailerAdapter):
             ),
             currency=self.EXPECTED_CURRENCY,
             availability="InStock",
-            # The search payload carries no category: `productType` is the
-            # literal string "Product" for every result.
             category=None,
             variant_count=None,
-            # ASOS numbers products (id) and stock units (productCode)
-            # separately, so the two never match by design.
+            # id and productCode are different numbering schemes
             sku_matches_product_id=False,
             promotional_copy=None,
             scraped_at=scraped_at,
@@ -250,11 +206,7 @@ class AsosAdapter(RetailerAdapter):
             return None
 
     def _embedded_products(self, response) -> List[Dict[str, Any]]:
-        """Pull the search results out of the page's embedded state.
-
-        Returns an empty list when the blob is absent or unparseable, which
-        is the honest answer for a search that returned nothing.
-        """
+        """Pull the search results out of the page's embedded state."""
         try:
             body = response.body
         except AttributeError:  # pragma: no cover - defensive
@@ -268,8 +220,7 @@ class AsosAdapter(RetailerAdapter):
             return []
         start += len('"products":')
 
-        # Walk to the matching bracket: the array holds nested objects, so a
-        # regex cannot bound it correctly.
+        # walk to the matching bracket -- nested objects, so no regex
         depth = 0
         end = None
         for index in range(start, len(body)):
@@ -284,9 +235,8 @@ class AsosAdapter(RetailerAdapter):
         if end is None:
             return []
 
-        # The blob lives in a JS string context where \' is legal; JSON
-        # rejects it. Without this, one apostrophe in one product title costs
-        # the entire page.
+        # \' is legal in JS but not JSON -- one apostrophe in one product
+        # title would otherwise cost the whole page
         payload = body[start:end].replace("\\'", "'")
         try:
             parsed = json.loads(payload)
@@ -329,9 +279,8 @@ class AsosAdapter(RetailerAdapter):
     def extract_campaigns(self, response) -> List[Campaign]:
         """Offers stated on a search or landing page.
 
-        ASOS advertises site-wide promotions in banner copy. Anything found
-        is scoped sitewide: a search page's banner is the same banner shown
-        everywhere, and nothing on it ties an offer to one brand.
+        Scoped sitewide: a search page's banner is the same one shown
+        everywhere, and nothing ties it to one brand.
         """
         url = str(response.url)
         campaigns: List[Campaign] = []
@@ -343,11 +292,8 @@ class AsosAdapter(RetailerAdapter):
                 continue
             if not is_confident_offer(text):
                 continue
-            # A bare discount tier ("Save 12%") is a shop-by-saving filter
-            # or a per-card badge, not a campaign. Recorded as one -- and
-            # these scans have no scope to give it but site-wide -- it
-            # attaches to every product found, which is how a product
-            # discounted 29% came to carry "At Least 70% Off".
+            # a bare tier ("Save 12%") is a filter, not a campaign -- as a
+            # sitewide campaign it would attach to every product
             if is_browse_facet(text, url):
                 continue
             seen.add(text)

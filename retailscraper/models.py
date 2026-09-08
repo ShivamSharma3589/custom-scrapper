@@ -12,18 +12,15 @@ campaign apply to many products, and one product carry several campaigns,
 without duplicating or losing data.
 """
 
-from __future__ import annotations
-
 import hashlib
 from dataclasses import dataclass, field, asdict
 from typing import Any, Dict, List, Optional
 
 
 # --- Campaign scope -------------------------------------------------------
-# How widely a campaign applies. We only ever claim a narrow scope when the
-# page structure actually tells us so; otherwise we say `unresolved` rather
-# than guessing. Mislabelling a site-wide banner as a brand campaign is the
-# single most common way this kind of scraper produces confident wrong data.
+# How widely a campaign applies. Claim a narrow scope only when the page
+# structure says so, else `unresolved` -- mislabelling a site-wide banner as
+# a brand campaign is the commonest way a scraper produces confident nonsense.
 
 SCOPE_SITEWIDE = "sitewide"      # e.g. a header strip banner shown on every page
 SCOPE_BRAND = "brand"            # tied to one brand
@@ -33,8 +30,6 @@ SCOPE_UNRESOLVED = "unresolved"  # we found the offer but cannot prove its reach
 
 
 # --- Promotion type -------------------------------------------------------
-# A coarse machine-readable classification of the offer, so downstream users
-# can filter without parsing English.
 
 PROMO_PERCENTAGE = "percentage_discount"  # "25% off"
 PROMO_CODE = "code_discount"              # "Extra 10% off | Use Code: EXTRA10"
@@ -71,9 +66,8 @@ class Campaign:
     record_type: str = "campaign"
 
     def __post_init__(self) -> None:
-        # Identity is the retailer + the offer text + its scope. The source URL
-        # is deliberately excluded: the same site-wide banner seen on twenty
-        # pages is one campaign, not twenty.
+        # source URL excluded on purpose: one banner seen on twenty pages
+        # is one campaign, not twenty
         if not self.campaign_id:
             self.campaign_id = _stable_id(
                 self.retailer, self.promotion_text, self.scope, self.scope_value
@@ -95,20 +89,14 @@ class Product:
     source_url: str              # where we found it (may differ from canonical)
 
     # --- brand provenance -------------------------------------------------
-    # `brand` holds the retailer's own name for the brand, exactly as it files
-    # it ("Jo Malone London"). `brand_matched_to` holds the name the business
-    # asked for ("Jo Malone"), so results can be grouped across retailers that
-    # each use a different trading name for the same brand.
-    #
-    # `brand_verified_by` records HOW we concluded this is a Brand X product.
-    # "breadcrumb_link" is authoritative (the retailer's own brand taxonomy);
-    # anything weaker is visible in the output so it can be audited.
+    # `brand` is the retailer's own name ("Jo Malone London");
+    # `brand_matched_to` is the name we asked for ("Jo Malone"), so results
+    # group across shops. `brand_verified_by` records HOW the brand was
+    # proved, so weak evidence stays visible and auditable.
     brand_matched_to: Optional[str] = None
     brand_verified_by: str = "unverified"
 
-    # The retailer's own category this product was discovered under (e.g.
-    # "skincare"). Taken from the category listing page it was found on, not
-    # inferred from the title -- so it is either the retailer's word or empty.
+    # taken from the listing it was found on, never inferred from the title
     category: Optional[str] = None
 
     # --- pricing ----------------------------------------------------------
@@ -120,22 +108,15 @@ class Product:
     availability: Optional[str] = None
 
     # --- variants ---------------------------------------------------------
-    # How many purchasable variants (shades/sizes) sit behind this URL. Needed
-    # because a variant product legitimately reports a shade-level SKU that
-    # differs from the URL's product id, while a single-variant product must
-    # not.
+    # a variant product may legitimately report a shade-level SKU that
+    # differs from the URL id; a single-variant product may not
     variant_count: Optional[int] = None
     sku: Optional[str] = None
 
-    # Whether this retailer numbers products and stock units in the SAME
-    # space, so a single-variant product's SKU should equal the product id in
-    # its URL. True for Lookfantastic and Boots, and the basis of the
-    # variant-conflict check that caught a 200ml balm carrying the 125ml
-    # balm's SKU.
-    #
-    # John Lewis uses two different schemes -- page id `p47865`, stock code
-    # `230631076` -- so comparing them there would reject every record. The
-    # adapter says which scheme applies rather than validation assuming one.
+    # True when the retailer numbers products and stock units in the same
+    # space, so a single-variant product's SKU should equal its URL id.
+    # True for Lookfantastic and Boots; John Lewis uses two schemes
+    # (`p47865` vs `230631076`), so comparing them there rejects everything.
     sku_matches_product_id: bool = True
 
     # True when the page quoted a RANGE ("£33.60 – £156.00") rather than one

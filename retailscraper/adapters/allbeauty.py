@@ -1,39 +1,21 @@
 """AllBeauty adapter.
 
-The fourth retailer, and the one that proves the framework is not merely a
-"parse HTML" pipeline: AllBeauty is a Shopify store, so its catalogue is
-available as JSON and there is nothing to scrape at all.
+A Shopify store, so the catalogue is available as JSON and there is nothing
+to scrape:
 
     https://allbeauty.com/collections/<brand>/products.json?limit=250&page=N
 
-One request returns up to 250 complete products. Each carries everything the
-model needs, stated by the retailer rather than inferred:
+One request returns up to 250 complete products -- vendor, product_type,
+price, compare_at_price, sku, availability -- so the listing IS the data and
+no product page is ever fetched. Seven brands cost seven requests, against
+1,083 page fetches on Lookfantastic.
 
-    vendor            -> the brand ("M.A.C", "Estée Lauder")
-    product_type      -> the category ("Cosmetics > Eyeliner")
-    variants[].price  -> the current price
-    variants[].compare_at_price -> the was-price
-    variants[].sku, .available, .title
+Two vendor spellings the brand matcher already handles, and which should NOT
+be "fixed" here: MAC is "M.A.C", Estee Lauder is "Estee Lauder" with an
+accent.
 
-That makes discovery roughly 70x cheaper than the page-per-product retailers:
-475 products across seven brands in seven requests, against 1,083 page
-fetches taking an hour on Lookfantastic.
-
-Because the listing IS the data, this adapter implements
-`extract_products_from_listing` rather than `extract_product_links`, and the
-crawler never fetches an individual product page.
-
-Two details found by inspection, both of which the brand matcher already
-handles and neither of which should be "fixed" here:
-
-  * the vendor for MAC is "M.A.C", with dots
-  * the vendor for Estee Lauder is "Estée Lauder", with an accent
-
-The shop is registered in Guernsey but trades in GBP (`/meta.json`), so
-prices need no conversion.
+`products.json` states no currency, so prepare() reads it off the storefront.
 """
-
-from __future__ import annotations
 
 import json
 import re
@@ -133,17 +115,10 @@ class AllBeautyAdapter(RetailerAdapter):
     def prepare(self, brands: Sequence[str]) -> List[str]:
         """Confirm the storefront is still quoting sterling.
 
-        `products.json` gives a bare number -- `"price": "26.20"` -- with no
-        currency anywhere in the payload, so the price this adapter reads
-        carries no evidence of what it is denominated in. Every other adapter
-        reads the currency off the page and refuses anything else; this one
-        alone asserted GBP, which would quietly relabel a euro price as
-        sterling if the store ever served one.
-
-        Shopify states the active currency on any storefront page, so one
-        request per run settles it. AllBeauty is cheapest on more comparisons
-        than any other retailer, so a wrong currency here would distort the
-        whole report rather than one row of it.
+        `products.json` gives a bare number with no currency, so one request
+        to the storefront settles what it is denominated in. AllBeauty wins
+        more price comparisons than any other retailer, so a wrong currency
+        here would distort the whole report.
         """
         import urllib.request
 
@@ -156,8 +131,7 @@ class AllBeautyAdapter(RetailerAdapter):
                 "utf-8", "replace"
             )
         except Exception:
-            # Unreachable is not the same as wrong; the crawl will fail on
-            # its own if the store is really down.
+            # unreachable is not wrong -- the crawl will fail on its own
             return []
 
         found = _SHOPIFY_CURRENCY_RE.search(html)

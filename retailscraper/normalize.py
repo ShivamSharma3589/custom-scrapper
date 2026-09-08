@@ -4,8 +4,6 @@ Nothing here knows anything about a specific retailer -- these are the
 generic "turn messy page text into typed data" utilities.
 """
 
-from __future__ import annotations
-
 import html
 import re
 from typing import Optional, Tuple

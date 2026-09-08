@@ -1,19 +1,16 @@
 """Audit collected runs for records that cannot be true.
 
-The test suite proves the code behaves as written against fixtures. This asks
-a different question of the real output: does any record contradict itself, or
-contradict the retailer it claims to come from?
+The test suite proves the code behaves as written. This asks a different
+question of the real output: does any record contradict itself, or the
+retailer it claims to come from?
 
-It is deliberately independent of the extraction code. Nothing here imports an
-adapter or reuses a parsing helper, so a mistake shared between extraction and
-its own test cannot hide from it -- the checks are re-derived from the values
-in the file.
+Deliberately independent of the extraction code -- nothing here imports an
+adapter or reuses a parsing helper, so a mistake shared between extraction
+and its own tests cannot hide from it.
 
     python audit.py                 # every run under output/
     python audit.py output/asos     # one retailer
 """
-
-from __future__ import annotations
 
 import json
 import re

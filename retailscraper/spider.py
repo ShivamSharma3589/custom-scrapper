@@ -1,20 +1,17 @@
 """The generic crawler.
 
-This spider contains no knowledge of any particular retailer. It drives a
-`RetailerAdapter` through a fixed pipeline:
+Knows nothing about any particular retailer. It drives a `RetailerAdapter`
+through a fixed pipeline:
 
-    sitemap -> candidate product URLs -> fetch -> adapter extraction
-            -> validation -> deduplication -> collected results
+    sitemap -> candidate URLs -> fetch -> adapter extraction
+            -> validation -> deduplication -> results
 
-and separately visits the adapter's campaign seed pages to pick up
-promotions that exist at brand or site level.
+and separately visits the adapter's campaign pages for brand and site-wide
+promotions.
 
-Crawling, retries, throttling, robots.txt compliance and URL-level
-deduplication are all provided by Scrapling's `SitemapSpider`; we do not
-reimplement any of it.
+Crawling, retries, throttling, robots.txt and URL deduplication all come
+from Scrapling's `SitemapSpider` -- none of it is reimplemented here.
 """
-
-from __future__ import annotations
 
 import re
 from typing import Any, AsyncGenerator, Callable, Dict, List, Optional, Sequence
@@ -32,10 +29,8 @@ class RetailPromotionSpider(SitemapSpider):
     name = "retail-promotions"
 
     # --- politeness -------------------------------------------------------
-    # These defaults are deliberately conservative. The retailer is a live
-    # commercial site and this job runs unattended; being slow is much cheaper
-    # than being blocked. AutoThrottle adapts the delay to observed latency and
-    # backs off on 429/503 responses.
+    # deliberately slow: these are live commercial sites and the job runs
+    # unattended, so being slow beats being blocked
     robots_txt_obey = True
     autothrottle_enabled = True
     autothrottle_start_delay = 2.0
@@ -84,17 +79,13 @@ class RetailPromotionSpider(SitemapSpider):
         self.resolve_categories = resolve_categories
         self.campaigns_only = campaigns_only
 
-        # These are class attributes on Spider/SitemapSpider; setting them on
-        # the instance before super().__init__() lets one spider class serve
-        # any retailer without subclassing per site.
-        # A campaigns-only run wants the offer hubs and nothing else. Leaving
-        # the sitemap in place would fetch the entire product catalogue to
-        # produce records the caller did not ask for.
+        # set on the instance before super().__init__() so one spider class
+        # serves every retailer. A campaigns-only run drops the sitemap, or
+        # it would crawl the whole catalogue for records nobody asked for.
         self.sitemap_urls = [] if campaigns_only else list(adapter.sitemap_urls)
         self.allowed_domains = {adapter.domain}
 
-        # A retailer that refuses requests under load can ask for a gentler
-        # crawl. Set before super().__init__() so the engine picks it up.
+        # set before super().__init__() so the engine picks it up
         if adapter.crawl_delay is not None:
             self.download_delay = adapter.crawl_delay
             self.autothrottle_start_delay = max(
@@ -108,22 +99,16 @@ class RetailPromotionSpider(SitemapSpider):
             self.development_mode = True
             self.development_cache_dir = cache_dir
 
-        # Results, keyed so that duplicates collapse rather than accumulate.
         self.products: Dict[str, Product] = {}      # product_id -> Product
         self.campaigns: Dict[str, Campaign] = {}    # campaign_id -> Campaign
         self.rejected: List[RejectedRecord] = []
 
-        # product_id -> category, learned from category listing pages. Applied
-        # after the crawl rather than during it, because a product page may be
-        # parsed before the listing that files it -- ordering the two would
-        # mean serialising the crawl for no benefit.
+        # applied after the crawl: a product page may be parsed before the
+        # listing that files it
         self.category_index: Dict[str, str] = {}
 
-        # Requests the retailer refused, per brand. Without this, a brand
-        # whose every request was rate-limited is indistinguishable in the
-        # summary from one the retailer genuinely does not stock -- John
-        # Lewis blocked all 96 Too Faced requests and the run reported "may
-        # not be stocked", which is a wrong business conclusion.
+        # without this, a rate-limited brand is indistinguishable from one
+        # the shop does not stock -- a wrong business conclusion
         self.blocked_by_brand: Dict[str, int] = {}
         #: Called with each newly accepted product, so a caller can save as
         #: the crawl goes rather than only at the end.
@@ -157,11 +142,8 @@ class RetailPromotionSpider(SitemapSpider):
         Discovery is then either a sitemap or paginated listing pages,
         depending on what the retailer actually exposes.
         """
-        # A retailer that challenges the first navigation of a session gets
-        # one sacrificial request first, and everything real is chained behind
-        # it. This applies to every run, not just campaigns-only: Boots used
-        # to be warmed by whichever campaign seed happened to go out first,
-        # which stopped being true the moment those seeds were removed.
+        # one sacrificial request first for retailers that challenge a cold
+        # session, with everything real chained behind it
         if self.adapter.warmup_url():
             yield Request(self.adapter.warmup_url(), callback=self.parse_warmup)
             return
@@ -171,18 +153,14 @@ class RetailPromotionSpider(SitemapSpider):
 
     async def _real_requests(self) -> AsyncGenerator[Request, None]:
         """Everything the crawl actually needs, once any warmup has happened."""
-        # Campaigns-only: scan the retailer's offer hubs and stop. No brands
-        # were given, so there is nothing to look products up by.
+        # campaigns-only: scan the offer hubs and stop
         if self.campaigns_only:
             for url in self.adapter.campaign_discovery_urls():
                 yield Request(url, callback=self.parse_campaign_directory)
             return
 
-        # The retailer's offers hub, on every run and not just a campaigns-only
-        # one. Without it a brand run recorded only the promotions it happened
-        # to pass while crawling products, so `campaigns.json` was a sample
-        # rather than the answer to "what is this retailer running?". One to
-        # three extra requests buys the whole picture.
+        # the offers hub on every run, not just campaigns-only -- otherwise
+        # campaigns.json is a sample of what the crawl happened to pass
         seeds = list(self.adapter.campaign_seed_urls(self.brands))
         for url in self.adapter.campaign_discovery_urls():
             if url not in seeds:
@@ -542,13 +520,9 @@ class RetailPromotionSpider(SitemapSpider):
         # one retailer and "Jo Malone" at another group together downstream.
         product.brand_matched_to = match_brand(product.brand, self.brands)
 
-        # The category comes from the listing page this product was found on,
-        # i.e. the retailer's own filing, never a guess from the title.
-        #
-        # Only fill a blank. Some retailers state the category on the product
-        # page itself (John Lewis puts it in its JSON-LD), and that is the
-        # better source -- overwriting it with the route's category would
-        # replace a stated fact with None on every John Lewis record.
+        # the category comes from the listing this product was found on.
+        # only fill a blank -- some retailers state a better one on the
+        # product page itself, and that must not be overwritten.
         route_category = meta.get("category")
         if route_category and not product.category:
             product.category = route_category

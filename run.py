@@ -2,13 +2,9 @@
 
 Examples
 --------
-Discover what the scraper can target:
+Discover what the scraper can target: `python run.py --list-retailers`
 
-    python run.py --list-retailers
-
-A small demo run against one brand:
-
-    python run.py --retailer lookfantastic --brands Clinique --max-products 15
+A small demo run against one brand: `python run.py --retailer lookfantastic --brands Clinique --max-products 15`
 
 A full nightly run across several brands:
 
@@ -22,26 +18,25 @@ from __future__ import annotations
 import argparse
 import logging
 import sys
-from datetime import datetime, timezone
+
 from pathlib import Path
 from typing import List
 
-# Make the package importable no matter which directory the script is invoked
-# from, so `python code/run.py ...` works from the repo root as well as
-# `python run.py ...` from inside code/.
+# Let this file be imported, not just run: an importer's working directory is
+# not this folder, so `retailscraper` would not be found.
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
-from retailscraper.adapters.base import available_adapters, get_adapter  # noqa: E402
-from retailscraper.keywords import KeywordFileError, describe, load_keywords  # noqa: E402
-from retailscraper.validation import (  # noqa: E402
+from retailscraper.adapters.base import available_adapters, get_adapter
+from retailscraper.keywords import KeywordFileError, describe, load_keywords
+from retailscraper.validation import (
     KNOWN_BRANDS,
     canonical_brand,
     suggest_brand,
 )
-from retailscraper.promotions import set_offer_keywords  # noqa: E402
-from retailscraper.output import build_payload, write_all, write_json  # noqa: E402
-from retailscraper.spider import RetailPromotionSpider  # noqa: E402
-from retailscraper.runs import (  # noqa: E402
+from retailscraper.promotions import set_offer_keywords
+from retailscraper.output import build_payload, write_all
+from retailscraper.spider import RetailPromotionSpider
+from retailscraper.runs import (
     DEFAULT_REFUSAL_LIMIT,
     STATUS_INCOMPLETE,
     STATUS_OK,
@@ -111,12 +106,6 @@ def parse_args(argv=None) -> argparse.Namespace:
         help="Enable checkpointing so an interrupted run can resume.",
     )
     parser.add_argument(
-        "--archive",
-        action="store_true",
-        help="Also keep a timestamped copy of this run under output/history/, "
-             "so changes.py can show what moved between runs.",
-    )
-    parser.add_argument(
         "--strict-brand",
         action="store_true",
         help="Only accept products whose brand comes from the retailer's "
@@ -181,8 +170,6 @@ def main(argv=None) -> int:
         print("error: --retailer is required", file=sys.stderr)
         return 2
 
-    # A campaigns-only run needs no brands: it asks what the whole site is
-    # promoting, not what one brand's products cost.
     if not args.brands and not args.campaigns_only:
         print("error: --brands is required unless you pass --campaigns-only",
               file=sys.stderr)
@@ -190,10 +177,7 @@ def main(argv=None) -> int:
 
     adapter = get_adapter(args.retailer)
 
-    # Correct known misspellings in what the USER typed, before anything uses
-    # it. Every retailer spells the brand "Bobbi Brown"; the brief said
-    # "Bobbie Brown", which matched nothing anywhere and read as "not
-    # stocked". Only the question is normalised -- never the retailer's answer.
+    # fix misspellings in what the user typed, e.g. "Bobbie Brown" -> "Bobbi Brown"
     corrected = []
     for raw_brand in args.brands:
         fixed = canonical_brand(raw_brand)
@@ -202,7 +186,8 @@ def main(argv=None) -> int:
         corrected.append(fixed)
     args.brands = corrected
 
-    # Refuse rather than return an empty file that looks like "no promotions".
+    # If no offer pages are available in the adapter.campaign_discovery_urls() list, 
+    # then --campaigns-only would find nothing. Refuse rather than silently ignore.
     if args.campaigns_only and not adapter.campaign_discovery_urls():
         print(
             f"error: no campaign hub pages are known for {adapter.display_name}, "
@@ -212,13 +197,9 @@ def main(argv=None) -> int:
         )
         return 2
 
-    # Default the output next to this script rather than to the current
-    # directory, so results always land in one predictable place regardless of
-    # where the command was run from.
+    # Selects folder to store the output and by default stores the output next to where the script lives
     out_dir = args.out_dir or (Path(__file__).resolve().parent / "output")
 
-    # Refuse rather than silently ignore: a category filter that quietly does
-    # nothing hands back the whole brand while looking like it worked.
     if args.categories and not adapter.supports_categories:
         print(
             f"error: {adapter.display_name} does not expose category listings, "
@@ -227,9 +208,7 @@ def main(argv=None) -> int:
         )
         return 2
 
-    # A custom offer vocabulary replaces the built-in rules for the whole run.
-    # Loaded before anything else so a broken keyword file fails immediately
-    # rather than after a long crawl that quietly matched nothing.
+    # Pass your own keyword file to override the built-in rules
     keyword_set = None
     if args.offer_keywords:
         try:
@@ -239,6 +218,7 @@ def main(argv=None) -> int:
             return 2
         set_offer_keywords(keyword_set)
 
+    # Logs the details of the run
     print(f"Retailer : {adapter.display_name} ({adapter.domain})")
     print(f"Offers   : {describe(keyword_set)}")
     if args.campaigns_only:
@@ -252,7 +232,6 @@ def main(argv=None) -> int:
     print("Starting crawl. This is deliberately slow so we stay within the "
           "retailer's rate limits.\n")
 
-    # --- run identity ----------------------------------------------------
     # Every run gets its own folder, so a scheduled run never overwrites the
     # one before it, and its log sits beside the data it produced.
     started_at = utc_now()
@@ -261,8 +240,7 @@ def main(argv=None) -> int:
     if args.run_folders:
         out_dir = run_folder(base_dir, adapter, started_at)
 
-    # Two runs of one retailer at once share its rate limit, so both come
-    # back short. Skipping is the better failure.
+    # skip if this retailer is already running
     lock = None
     if args.run_folders:
         try:
@@ -271,11 +249,8 @@ def main(argv=None) -> int:
         except RunLockBusy as exc:
             print(f"skipped: {exc}", file=sys.stderr)
             return 3
-    # Everything from here is guarded: whatever happens, the lock is
-    # released and the log is closed. Releasing only on success meant a
-    # browser dying mid-crawl left the lock behind, and STALE_LOCK_SECONDS
-    # then skipped the next two scheduled sweeps for this retailer while
-    # run_all.py reported them as a harmless "already running".
+
+    # always release the lock and close the log, even if the crawl crashes
     log_handler = None
     partial_writer = None
     prepare_warnings: List[str] = []
@@ -286,14 +261,8 @@ def main(argv=None) -> int:
             ", ".join(args.brands) or "(campaigns only)",
         )
 
-        # Adapter setup that needs its own network calls happens here, before the
-        # crawler's event loop exists. Warnings are printed rather than fatal: a
-        # brand one retailer does not stock should not stop the others.
-        #
-        # They are kept, too: a warning names a brand the retailer told us it does
-        # not stock, and a brand in that list returning nothing is expected rather
-        # than a failure. Without the distinction, every unstocked brand would
-        # fail the run.
+        # resolve brands before crawling; warnings name brands the shop
+        # does not stock, which the verdict below needs
         for warning in adapter.prepare(args.brands):
             prepare_warnings.append(warning)
             logging.getLogger(__name__).warning(warning)
@@ -316,16 +285,14 @@ def main(argv=None) -> int:
                         if partial_writer else None),
         )
 
-        # The crawler's logger does not propagate, so it has to be attached
-        # directly or run.log records nothing the crawl did.
+        # attach the log file to the crawler's logger too -- it doesn't pass
+        # messages up, so run.log would miss everything the crawl did
         capture_logger(log_handler, getattr(spider, "logger", None))
 
         result = spider.start()
 
-        # Categories are learned from listing pages during the crawl and applied
-        # here, once every product is in hand.
-        # A campaign found on the last page applies to the first product
-        # too, so attachment happens once everything is in hand.
+        # both need the whole crawl first: a campaign found on the last page
+        # still applies to the first product
         with_campaigns = spider.apply_campaigns()
         if with_campaigns:
             print(f"campaigns attached to {with_campaigns} product(s)")
@@ -335,11 +302,10 @@ def main(argv=None) -> int:
             print(f"\ncategory index: {len(spider.category_index)} product(s) mapped, "
                   f"{filled} record(s) filled in")
 
-        # `CrawlStats` is a dataclass-like object; fall back gracefully if the
-        # attribute set changes in a future Scrapling release.
+        # tolerate a future Scrapling release changing CrawlStats
         try:
             stats = dict(vars(result.stats))
-        except TypeError:  # pragma: no cover
+        except TypeError:
             stats = {}
 
         payload = build_payload(
@@ -353,38 +319,19 @@ def main(argv=None) -> int:
             run_id=run_id,
         )
 
-        if args.brands:
-            slug = "-".join(b.lower().replace(" ", "-") for b in args.brands)
-        else:
-            slug = "site"
-        basename = f"{adapter.name}_{slug}"
-        # Everything that was saved as we went is now in the finished files, so
-        # the partial copy is removed -- a folder still holding one is itself the
-        # signal that the run did not get this far.
         if partial_writer:
             partial_writer.flush()
 
-        written = write_all(payload, out_dir, basename)
+        written = write_all(payload, out_dir)
 
+        # a partial file left behind is the signal that a run never finished
         if partial_writer:
             partial_writer.discard()
-
-        if args.archive:
-            # A timestamped copy is what makes change detection possible at all:
-            # without it every run overwrites the only evidence of what came
-            # before. The timestamp is filename-safe and sorts chronologically.
-            stamp = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H%M%SZ")
-            archive_path = out_dir / "history" / f"{basename}_{stamp}.json"
-            written.append(write_json(payload, archive_path))
 
         run_stats = payload["run_stats"]
         print("\n--- run summary ---")
 
-        # Per-brand counts, and a loud line for any brand that returned nothing.
-        # A total on its own hides a brand that yielded zero -- asking for two
-        # brands and getting six records reads as "six found", not "one brand
-        # produced nothing at all", so an unstocked brand looks identical to a
-        # brand with no promotions.
+        # count per brand -- a total alone hides a brand that returned zero
         if args.brands:
             found = {b: 0 for b in args.brands}
             for product in spider.products.values():
@@ -396,20 +343,15 @@ def main(argv=None) -> int:
                 print(f"  {brand:22} {count:>4} product(s){marker}")
             empty = [b for b, c in found.items() if not c]
             if empty:
-                # Every brand the crawl actually saw, including ones it rejected
-                # for being the wrong brand. Comparing an empty request against
-                # that catches a typo without anyone having to predict it: the
-                # brief's "Bobbie Brown" returned nothing at all six retailers
-                # and read as "not stocked".
+                # every brand the crawl saw, rejections included
                 seen_brands = {p.brand for p in spider.products.values() if p.brand}
                 seen_brands |= {
                     (r.payload or {}).get("brand")
                     for r in spider.rejected
                     if (r.payload or {}).get("brand")
                 }
-                # Check against the brands we track as well as those seen: a
-                # retailer that returns nothing for a misspelling never reveals
-                # the right spelling, which is precisely when help is needed.
+                # also check known brands: a misspelling returns nothing, so the
+                # crawl never reveals the right spelling on its own
                 candidates = sorted(seen_brands | set(KNOWN_BRANDS))
                 for brand in empty:
                     did_you_mean = suggest_brand(brand, candidates)
@@ -418,11 +360,7 @@ def main(argv=None) -> int:
                               f"{adapter.display_name} stocks {did_you_mean!r}. "
                               f"Re-run with that spelling.")
 
-                # A brand whose requests were refused is NOT evidence of anything
-                # about stock. Saying "may not be stocked" there turns a rate
-                # limit into a false business conclusion: John Lewis blocked all
-                # 96 Too Faced requests and the run reported it as possibly
-                # unstocked, when John Lewis stocks it.
+                # a brand whose requests were refused says nothing about stock
                 blocked = getattr(spider, "blocked_by_brand", {}) or {}
                 throttled = [b for b in empty if blocked.get(b)]
                 genuinely_empty = [b for b in empty if not blocked.get(b)]
@@ -444,27 +382,20 @@ def main(argv=None) -> int:
         for reason, count in run_stats["rejections_by_reason"].items():
             print(f"      {reason}: {count}")
 
-        # --- verdict ---------------------------------------------------------
-        # A brand `prepare()` warned about is one the retailer said it does not
-        # stock, so its empty result is expected. Every other requested brand is
-        # expected to return something, and a silent zero there is the failure
-        # that hid John Lewis's missing Estee Lauder for weeks.
+        # a brand prepare() warned about is not stocked, so its zero is expected
         unstocked = {
             brand for brand in args.brands
             if any(repr(brand) in w or f"'{brand}'" in w for w in prepare_warnings)
         }
-        # Only an adapter that positively resolves a brand page can tell an
-        # empty brand apart from one the shop does not carry. Where it cannot,
-        # nothing is expected and an empty brand is not held against the run.
+        # only an adapter that resolves brand pages can tell "empty" from
+        # "not stocked"; the rest are not judged on empty brands
         expected = (
             [b for b in args.brands if b not in unstocked]
             if adapter.confirms_brand_stocking else []
         )
         empty = [b for b in args.brands if found.get(b, 0) == 0] if args.brands else []
 
-        # What the retailer itself says it lists, where it says so. Only
-        # John Lewis and M&S publish a total; the rest return None and are
-        # judged on what they found.
+        # what the retailer says it stocks, where it says so at all
         expected_products = adapter.expected_product_count(args.brands)
 
         status, reason = verdict(
@@ -473,8 +404,7 @@ def main(argv=None) -> int:
             brands_expected=expected,
             brands_empty=empty,
             refusal_limit=args.refusal_limit,
-            # Only judged on a campaigns-only run; a normal run is judged on
-            # its products, which the checks above already cover.
+            # only judged on a campaigns-only run
             campaigns=(run_stats["campaign_records"]
                        if args.campaigns_only else None),
             expected_products=expected_products,
@@ -485,9 +415,7 @@ def main(argv=None) -> int:
         print(f"  verdict           : {status.upper()}"
               + (f" -- {reason}" if reason else ""))
 
-        # Products an adapter dropped before they ever became records. These are
-        # deliberate skips, but silent ones look exactly like a brand the
-        # retailer does not stock, so the counts are stated.
+        # deliberate skips, stated so they don't look like an unstocked brand
         for label, attribute in (
             ("priced in another currency", "wrong_currency_seen"),
             ("sponsored placements", "sponsored_skipped"),
@@ -496,9 +424,7 @@ def main(argv=None) -> int:
             count = getattr(adapter, attribute, 0)
             if count:
                 print(f"  skipped           : {count} {label}")
-        # --- manifest --------------------------------------------------------
-        # Written whatever the verdict: a failed run's record is the one worth
-        # keeping, because it is what a blocking report is built from.
+        # written whatever the verdict -- a failed run's record is the useful one
         if args.run_folders:
             manifest = build_manifest(
                 run_id=run_id,
@@ -524,14 +450,11 @@ def main(argv=None) -> int:
 
         logging.getLogger(__name__).info("run %s finished: %s", run_id, status)
 
-        # Cron reads this. A run that could not be trusted must not look like one
-        # that worked -- see the module docstring of retailscraper/runs.py.
+        # a run that cannot be trusted must not exit like one that worked
         return 0 if status == STATUS_OK else 1
     except Exception as exc:
-        # A crashed run still owes an account of itself. Without a manifest,
-        # the folder holds a half-written products.partial.jsonl and nothing
-        # to say the run never finished, so a loader cannot tell partial data
-        # from complete data.
+        # a crashed run still writes a manifest, so partial data is not
+        # mistaken for complete data
         logging.getLogger(__name__).exception("run %s failed", run_id)
         print(f"error: {exc}", file=sys.stderr)
         if args.run_folders:

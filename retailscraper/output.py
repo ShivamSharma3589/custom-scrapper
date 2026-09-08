@@ -10,8 +10,6 @@ this as "campaign, and the products under it" without the data model having
 to duplicate products across campaigns or drop the ones no campaign covers.
 """
 
-from __future__ import annotations
-
 import csv
 import json
 import re
@@ -168,24 +166,15 @@ def group_by_brand(rows: List[Dict[str, Any]]) -> Dict[str, List[Dict[str, Any]]
 def write_all(payload: Dict[str, Any], out_dir: Path, basename: str = "") -> List[Path]:
     """Write one run's results: a file per brand, plus the shared views.
 
-        clinique.json          every Clinique record, and the run's campaigns
+        clinique.json          Clinique's products, and the run's campaigns
         clinique_products.csv
-        mac.json
-        mac_products.csv
         campaigns.csv          every campaign the retailer is running
         rejected.csv           what was refused, and why
 
-    Names carry the brand and nothing else. The folder already says which
-    retailer and which run these belong to, and a single combined document
-    ended up named after every brand in the run --
-    `lookfantastic_clinique-mac-tom-ford-jo-malone-estee-lauder-bobbi-brown-
-    too-faced.json` -- which is unusable as a filename and impossible to pick
-    a brand out of.
-
-    Each brand's JSON carries the run's campaigns as well as its products, so
-    one file answers "what is this retailer doing to this brand" without
-    needing a second. Campaigns are retailer-wide rather than brand-specific,
-    so they repeat across the files; `campaigns.csv` holds the single copy.
+    Names carry the brand only -- the folder already says which retailer and
+    which run. Campaigns repeat in each brand's JSON so one file answers
+    "what is this retailer doing to this brand"; `campaigns.csv` is the
+    single copy.
 
     `basename` is accepted and ignored, so existing callers keep working.
     """

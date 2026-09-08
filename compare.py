@@ -4,13 +4,13 @@ Takes the JSON output of two or more runs and reports where one retailer
 undercuts another on the same product -- the question the whole project
 exists to answer.
 
-    python compare.py output/lookfantastic_clinique.json output/boots_clinique.json
+    # two runs
+    python compare.py output/boots/2026/09/08/*/clinique.json \\
+                      output/lookfantastic/2026/09/08/*/clinique.json
 
     # everything scraped so far
-    python compare.py output/*.json --out-dir output
+    python compare.py output/*/2026/09/*/*/*.json --out-dir output
 """
-
-from __future__ import annotations
 
 import argparse
 import csv
@@ -24,7 +24,9 @@ from retailscraper.matching import match_across_retailers  # noqa: E402
 
 COMPARISON_COLUMNS = [
     "brand", "title", "size", "match_score", "retailer_count",
-    "cheapest_retailer", "cheapest_price", "price_gap", "rrp_disagreement",
+    "cheapest_retailer", "cheapest_price", "price_gap",
+    # Both flag a match worth a second look before quoting its gap.
+    "rrp_disagreement", "currency_mismatch",
 ]
 
 
@@ -48,11 +50,8 @@ def parse_args(argv=None) -> argparse.Namespace:
 def load_products(paths) -> list:
     """Read every product record from the given run files.
 
-    Anything that is not a run document is skipped rather than crashing the
-    comparison. A run folder now holds `manifest.json` beside its results, so
-    the obvious `output/asos/2026/09/07/*/*.json` sweeps the manifest in too
-    -- and the manifest's `products` is a COUNT, not a list, which ended the
-    whole comparison with `'int' object is not iterable`.
+    Skips anything that is not a run document: a folder glob picks up
+    `manifest.json` too, whose `products` is a count, not a list.
     """
     products = []
     for path in paths:
