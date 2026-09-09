@@ -15,7 +15,40 @@ python run.py --retailer lookfantastic --brands Clinique --max-products 15
 ```bash
 python -m venv .venv
 .venv/Scripts/python.exe -m pip install -r requirements.txt
+.venv/Scripts/scrapling install
 ```
+
+That last line is not optional. It downloads the browser binaries, which pip
+does not — Boots, John Lewis, Amazon, ASOS and Lookfantastic all need a real
+browser, and without it they fail in a way that looks like a bot block rather
+than a missing dependency.
+
+## The HTTP API
+
+```bash
+.venv/Scripts/uvicorn api:app --host 0.0.0.0 --port 8000
+```
+
+Interactive docs at `/docs`. A scrape takes between one and forty minutes, far
+longer than an HTTP request survives, so `POST /scrape` returns straight away
+and the work continues in the background.
+
+```
+POST /scrape        {"retailer": "boots", "brands": ["Clinique"]}   -> 202
+POST /scrape        {"retailer": "boots", "campaigns_only": true}
+GET  /runs/latest/boots        status of the most recent Boots run
+GET  /runs/{run_id}            manifest: status, counts, refusals
+GET  /runs/{run_id}/products
+GET  /runs/{run_id}/campaigns
+GET  /runs/{run_id}/log
+GET  /retailers                the adapters and what each supports
+POST /compare                  cross-retailer price comparison
+```
+
+Asking for a retailer that is already running returns **409**, not a second
+crawl: two browsers on one shop get both of them throttled. The check uses the
+same lock file `run.py` takes, so the API cannot drift out of step with what
+is actually running.
 
 ## Usage
 

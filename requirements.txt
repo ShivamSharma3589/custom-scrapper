@@ -1,3 +1,11 @@
 # The scraping engine. The [fetchers] extra pulls in the HTTP/browser
 # backends, anyio and protego, which the Spider/crawler stack needs.
+#
+# After installing these, run:  scrapling install
+# That downloads the browser binaries, which pip does not. Five retailers
+# need a real browser and will fail without them.
 scrapling[fetchers]==0.4.15
+
+# The HTTP API (api.py). Not needed to run the scraper from the command line.
+fastapi==0.141.1
+uvicorn[standard]==0.52.4
