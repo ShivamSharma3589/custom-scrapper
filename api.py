@@ -2,14 +2,9 @@
 
     uvicorn api:app --host 0.0.0.0 --port 8000
 
-One POST starts anything the command line can do; the GETs read what
-happened. A scrape takes between one and forty minutes, far longer than an
-HTTP request survives, so `POST /scrape` returns a `run_id` immediately and
-the work continues in a background process.
-
-Asking for a retailer that is already running returns 409 with the run that
-holds it, rather than starting a second crawl -- two browsers on one shop get
-both of them throttled.
+A scrape takes 1-40 minutes, longer than an HTTP request lives, so POST
+/scrape queues the job and hands back an id. The GETs read the results.
+Asking twice for the same retailer gets a 409, not a second crawl.
 
     POST /scrape                {"retailer": "boots", "brands": ["Clinique"]}
     GET  /runs/{run_id}         status and counts
@@ -22,7 +17,6 @@ both of them throttled.
 """
 
 import json
-import subprocess
 import sys
 from pathlib import Path
 from typing import Any, Dict, List, Optional
@@ -35,6 +29,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from retailscraper.adapters.base import available_adapters, get_adapter  # noqa: E402
 from retailscraper.runs import retailer_folder_name  # noqa: E402
+import queue_worker  # noqa: E402
 
 HERE = Path(__file__).resolve().parent
 OUTPUT = HERE / "output"
@@ -77,11 +72,7 @@ class CompareRequest(BaseModel):
 # --- reading what the scraper wrote ---------------------------------------
 
 def _run_folders() -> List[Path]:
-    """Every run folder, newest first.
-
-    A run folder is `<retailer>/YYYY/MM/DD/HH-MM-SS/`, five levels below
-    output/, and always holds a manifest.
-    """
+    """Every run folder, newest first: <retailer>/YYYY/MM/DD/HH-MM-SS/."""
     folders = []
     for manifest in OUTPUT.rglob("manifest.json"):
         parts = manifest.parent.relative_to(OUTPUT).parts
@@ -125,12 +116,7 @@ def _records(folder: Path, key: str) -> List[Dict[str, Any]]:
 
 
 def _is_running(retailer_key: str) -> Optional[str]:
-    """The lock holder for this retailer, or None.
-
-    `run.py` takes a lock file per retailer for the length of a run, so this
-    is the same signal the scraper itself uses -- no separate bookkeeping to
-    drift out of step with reality.
-    """
+    """Who holds this retailer's lock, or None. Same file run.py writes."""
     lock = OUTPUT / f".{retailer_key}.lock"
     if not lock.exists():
         return None
@@ -163,11 +149,7 @@ def list_retailers() -> List[Dict[str, Any]]:
 
 @app.post("/scrape", status_code=202)
 def start_scrape(request: ScrapeRequest) -> Dict[str, Any]:
-    """Start a run and return immediately.
-
-    202 Accepted, not 200: the work has been accepted, not finished. Poll
-    `GET /runs/{run_id}` for the result.
-    """
+    """Queue a run and return straight away. 202 means accepted, not done."""
     try:
         adapter = get_adapter(request.retailer)
     except KeyError as exc:
@@ -176,9 +158,15 @@ def start_scrape(request: ScrapeRequest) -> Dict[str, Any]:
     if not request.brands and not request.campaigns_only:
         raise HTTPException(400, "give brands, or set campaigns_only")
 
-    # One crawl per retailer. A second would share the rate limit and both
-    # would come back short, so it is refused rather than queued.
     key = retailer_folder_name(adapter)
+
+    # Asking twice for the same retailer is a duplicate, not a second crawl.
+    existing = queue_worker.queued_for(key)
+    if existing:
+        raise HTTPException(409, {
+            "error": f"{adapter.display_name} is already {existing['status']}",
+            "job": existing,
+        })
     holder = _is_running(key)
     if holder:
         raise HTTPException(409, {
@@ -206,20 +194,12 @@ def start_scrape(request: ScrapeRequest) -> Dict[str, Any]:
     if request.refusal_limit is not None:
         command += ["--refusal-limit", str(request.refusal_limit)]
 
-    # Detached, so this request returns now and the crawl outlives it.
-    process = subprocess.Popen(
-        command, cwd=str(HERE),
-        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
-    )
-
+    # Queued, not started: two browser crawls at once slow each other down.
+    job = queue_worker.submit(key, adapter.display_name, command)
     return {
-        "status": "started",
-        "retailer": adapter.display_name,
-        "retailer_key": key,
+        **job,
         "brands": request.brands,
-        "pid": process.pid,
         "poll": f"/runs/latest/{key}",
-        "note": "the run_id appears once the run has created its folder",
     }
 
 
@@ -309,11 +289,7 @@ def get_log(run_id: str, tail: int = Query(200, ge=1, le=10000)) -> str:
 
 @app.post("/compare")
 def compare(request: CompareRequest) -> Dict[str, Any]:
-    """Compare the newest run of each retailer.
-
-    Runs in-process rather than as a subprocess: it reads files that already
-    exist, so it finishes in seconds.
-    """
+    """Compare the newest run of each retailer. Reads files, so it is quick."""
     from retailscraper.matching import match_across_retailers
 
     wanted = {r.casefold() for r in request.retailers}
@@ -368,3 +344,34 @@ def health() -> Dict[str, Any]:
         "runs_on_disk": len(_run_folders()),
         "running": {k: v for k, v in running.items() if v},
     }
+
+
+# --- the queue -------------------------------------------------------------
+
+@app.get("/queue")
+def get_queue() -> Dict[str, Any]:
+    """What is running, what is waiting, and what finished recently."""
+    return queue_worker.state()
+
+
+@app.delete("/queue/{job_id}")
+def cancel_job(job_id: str) -> Dict[str, Any]:
+    """Drop a job that has not started yet."""
+    if not queue_worker.cancel(job_id):
+        raise HTTPException(404, f"no queued job {job_id!r} -- it may have started")
+    return {"cancelled": job_id}
+
+
+@app.post("/queue/stop")
+def stop_current(clear_queue: bool = Query(
+    False, description="Also drop everything still waiting.")
+) -> Dict[str, Any]:
+    """Stop the crawl in progress.
+
+    Whatever it already wrote to disk stays. There is no manifest, which is
+    how you tell the run did not finish.
+    """
+    stopped = queue_worker.stop_running(clear_queue=clear_queue)
+    if stopped is None:
+        return {"stopped": None, "note": "nothing was running"}
+    return {"stopped": stopped, "queue_cleared": clear_queue}

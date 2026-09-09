@@ -19,6 +19,11 @@
       "key": "retailer_key",
       "value": "boots",
       "description": "Folder-name form of the retailer: boots, john_lewis, marks_and_spencer, allbeauty, asos, amazon_uk, lookfantastic, next."
+    },
+    {
+      "key": "job_id",
+      "value": "",
+      "description": "A queued job's id, from GET /queue."
     }
   ],
   "item": [
@@ -29,7 +34,15 @@
           "name": "Health",
           "request": {
             "method": "GET",
-            "url": {"raw": "{{baseUrl}}/health", "host": ["{{baseUrl}}"], "path": ["health"]},
+            "url": {
+              "raw": "{{baseUrl}}/health",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "health"
+              ]
+            },
             "description": "Is the API up, how many runs are on disk, and which retailers are crawling right now."
           }
         },
@@ -37,7 +50,15 @@
           "name": "List retailers",
           "request": {
             "method": "GET",
-            "url": {"raw": "{{baseUrl}}/retailers", "host": ["{{baseUrl}}"], "path": ["retailers"]},
+            "url": {
+              "raw": "{{baseUrl}}/retailers",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "retailers"
+              ]
+            },
             "description": "The 8 adapters, what each supports, and whether it is currently running.\n\n`supports_categories` - can honour a --categories filter.\n`confirms_brand_stocking` - can tell 'not stocked' from 'we found nothing'.\n`has_campaign_hubs` - campaigns_only will work."
           }
         }
@@ -64,12 +85,25 @@
           ],
           "request": {
             "method": "POST",
-            "header": [{"key": "Content-Type", "value": "application/json"}],
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
             "body": {
               "mode": "raw",
               "raw": "{\n  \"retailer\": \"allbeauty\",\n  \"brands\": [\"Clinique\"],\n  \"max_products\": 5\n}"
             },
-            "url": {"raw": "{{baseUrl}}/scrape", "host": ["{{baseUrl}}"], "path": ["scrape"]},
+            "url": {
+              "raw": "{{baseUrl}}/scrape",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "scrape"
+              ]
+            },
             "description": "AllBeauty is the fastest retailer (under a minute), so it is the one to test with.\n\n`max_products` caps products PER BRAND. Omit it for a full run.\n\nReturns 202 with a `poll` URL. It does NOT wait for the crawl."
           }
         },
@@ -77,12 +111,25 @@
           "name": "Scrape all seven brands (full run)",
           "request": {
             "method": "POST",
-            "header": [{"key": "Content-Type", "value": "application/json"}],
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
             "body": {
               "mode": "raw",
               "raw": "{\n  \"retailer\": \"boots\",\n  \"brands\": [\n    \"Clinique\",\n    \"MAC\",\n    \"Tom Ford\",\n    \"Jo Malone\",\n    \"Estee Lauder\",\n    \"Bobbi Brown\",\n    \"Too Faced\"\n  ]\n}"
             },
-            "url": {"raw": "{{baseUrl}}/scrape", "host": ["{{baseUrl}}"], "path": ["scrape"]},
+            "url": {
+              "raw": "{{baseUrl}}/scrape",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "scrape"
+              ]
+            },
             "description": "A real run. Boots takes roughly 35 minutes.\n\nBrand spellings are corrected automatically: \"Bobbie Brown\" becomes \"Bobbi Brown\"."
           }
         },
@@ -90,12 +137,25 @@
           "name": "Campaigns only (no products)",
           "request": {
             "method": "POST",
-            "header": [{"key": "Content-Type", "value": "application/json"}],
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
             "body": {
               "mode": "raw",
               "raw": "{\n  \"retailer\": \"marksandspencer\",\n  \"campaigns_only\": true\n}"
             },
-            "url": {"raw": "{{baseUrl}}/scrape", "host": ["{{baseUrl}}"], "path": ["scrape"]},
+            "url": {
+              "raw": "{{baseUrl}}/scrape",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "scrape"
+              ]
+            },
             "description": "Every promotion the retailer is running, regardless of brand. No brands needed.\n\nFast - it only reads the offers pages. M&S returns about 29 campaigns."
           }
         },
@@ -103,12 +163,25 @@
           "name": "Scrape with options",
           "request": {
             "method": "POST",
-            "header": [{"key": "Content-Type", "value": "application/json"}],
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
             "body": {
               "mode": "raw",
               "raw": "{\n  \"retailer\": \"https://www.lookfantastic.com\",\n  \"brands\": [\"Clinique\", \"MAC\"],\n  \"categories\": [\"skincare\"],\n  \"strict_brand\": true,\n  \"max_products\": 20,\n  \"refusal_limit\": 0.45\n}"
             },
-            "url": {"raw": "{{baseUrl}}/scrape", "host": ["{{baseUrl}}"], "path": ["scrape"]},
+            "url": {
+              "raw": "{{baseUrl}}/scrape",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "scrape"
+              ]
+            },
             "description": "Every command-line flag is available.\n\n`retailer` accepts a name, a domain or a full URL.\n`categories` - only for retailers where supports_categories is true.\n`strict_brand` - only accept brands proved by structured data. Fewer records, higher confidence.\n`refusal_limit` - share of refused requests before the run is called failed (default 0.30)."
           }
         },
@@ -116,13 +189,26 @@
           "name": "Duplicate request -> 409",
           "request": {
             "method": "POST",
-            "header": [{"key": "Content-Type", "value": "application/json"}],
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
             "body": {
               "mode": "raw",
               "raw": "{\n  \"retailer\": \"allbeauty\",\n  \"brands\": [\"Clinique\"]\n}"
             },
-            "url": {"raw": "{{baseUrl}}/scrape", "host": ["{{baseUrl}}"], "path": ["scrape"]},
-            "description": "Send this WHILE the same retailer is running.\n\nReturns 409, not a second crawl - two browsers on one shop get both of them throttled and both come back short.\n\nThe check reads the same lock file run.py takes, so the API cannot claim something is running when it is not."
+            "url": {
+              "raw": "{{baseUrl}}/scrape",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "scrape"
+              ]
+            },
+            "description": "Send this WHILE the same retailer is running OR queued.\n\nReturns 409 with the existing job, rather than queueing it twice -- asking again is a duplicate request, not a second crawl."
           }
         }
       ]
@@ -149,8 +235,14 @@
             "method": "GET",
             "url": {
               "raw": "{{baseUrl}}/runs/latest/{{retailer_key}}",
-              "host": ["{{baseUrl}}"],
-              "path": ["runs", "latest", "{{retailer_key}}"]
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "runs",
+                "latest",
+                "{{retailer_key}}"
+              ]
             },
             "description": "Poll this after starting a scrape. Saves the run_id into a collection variable, so the requests below just work.\n\n`running: true`   still crawling\n`status: ok`      finished, data is good\n`status: failed`  finished, but do not trust it - see `reason`\n`status: incomplete`  the run was killed part-way"
           }
@@ -161,11 +253,22 @@
             "method": "GET",
             "url": {
               "raw": "{{baseUrl}}/runs?limit=20",
-              "host": ["{{baseUrl}}"],
-              "path": ["runs"],
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "runs"
+              ],
               "query": [
-                {"key": "limit", "value": "20"},
-                {"key": "retailer", "value": "boots", "disabled": true}
+                {
+                  "key": "limit",
+                  "value": "20"
+                },
+                {
+                  "key": "retailer",
+                  "value": "boots",
+                  "disabled": true
+                }
               ]
             },
             "description": "Every run, newest first. Add `retailer` to filter."
@@ -177,8 +280,13 @@
             "method": "GET",
             "url": {
               "raw": "{{baseUrl}}/runs/{{run_id}}",
-              "host": ["{{baseUrl}}"],
-              "path": ["runs", "{{run_id}}"]
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "runs",
+                "{{run_id}}"
+              ]
             },
             "description": "The full record of one run: status, reason, product and campaign counts, requests made and refused, duration, brands that returned nothing, and any warnings.\n\nThis is the row worth keeping in a warehouse."
           }
@@ -189,9 +297,20 @@
             "method": "GET",
             "url": {
               "raw": "{{baseUrl}}/runs/{{run_id}}/log?tail=200",
-              "host": ["{{baseUrl}}"],
-              "path": ["runs", "{{run_id}}", "log"],
-              "query": [{"key": "tail", "value": "200"}]
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "runs",
+                "{{run_id}}",
+                "log"
+              ],
+              "query": [
+                {
+                  "key": "tail",
+                  "value": "200"
+                }
+              ]
             },
             "description": "Plain text, every request the crawl made. The first place to look when a run fails."
           }
@@ -207,9 +326,21 @@
             "method": "GET",
             "url": {
               "raw": "{{baseUrl}}/runs/{{run_id}}/products",
-              "host": ["{{baseUrl}}"],
-              "path": ["runs", "{{run_id}}", "products"],
-              "query": [{"key": "brand", "value": "Clinique", "disabled": true}]
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "runs",
+                "{{run_id}}",
+                "products"
+              ],
+              "query": [
+                {
+                  "key": "brand",
+                  "value": "Clinique",
+                  "disabled": true
+                }
+              ]
             },
             "description": "Every product from the run. Enable `brand` to filter to one.\n\nEach record carries: current_price, original_price, discount_percent, currency, availability, promotional_copy, applied_campaigns, and brand_verified_by - which records HOW the brand was proved."
           }
@@ -220,8 +351,14 @@
             "method": "GET",
             "url": {
               "raw": "{{baseUrl}}/runs/{{run_id}}/campaigns",
-              "host": ["{{baseUrl}}"],
-              "path": ["runs", "{{run_id}}", "campaigns"]
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "runs",
+                "{{run_id}}",
+                "campaigns"
+              ]
             },
             "description": "Promotions the retailer is running.\n\n`scope` says how widely each applies:\n  sitewide   - a banner on every page\n  brand      - tied to one brand\n  category   - tied to a department\n  product    - tied to one item\n  unresolved - found it, cannot prove its reach"
           }
@@ -232,8 +369,14 @@
             "method": "GET",
             "url": {
               "raw": "{{baseUrl}}/runs/{{run_id}}/rejected",
-              "host": ["{{baseUrl}}"],
-              "path": ["runs", "{{run_id}}", "rejected"]
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "runs",
+                "{{run_id}}",
+                "rejected"
+              ]
             },
             "description": "What the run refused to publish, and why: missing_price, brand_mismatch, discount_mismatch, unverified_brand.\n\nRejections are output on purpose - you can see what was refused rather than wondering why a count looks low."
           }
@@ -247,9 +390,25 @@
           "name": "Compare everything scraped",
           "request": {
             "method": "POST",
-            "header": [{"key": "Content-Type", "value": "application/json"}],
-            "body": {"mode": "raw", "raw": "{\n  \"threshold\": 0.85\n}"},
-            "url": {"raw": "{{baseUrl}}/compare", "host": ["{{baseUrl}}"], "path": ["compare"]},
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"threshold\": 0.85\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/compare",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "compare"
+              ]
+            },
             "description": "Where one retailer undercuts another on the same product - the question the project exists to answer.\n\nUses the newest successful run of every retailer. Needs at least two.\n\n`threshold` is title similarity, 0-1. Lower it for more matches, at the cost of pairing products that only read alike.\n\nCheck two flags before quoting a gap:\n  rrp_disagreement  - the shops disagree on the RRP, so these may be different products\n  currency_mismatch - not all offers were in one currency"
           }
         },
@@ -257,13 +416,146 @@
           "name": "Compare two named retailers",
           "request": {
             "method": "POST",
-            "header": [{"key": "Content-Type", "value": "application/json"}],
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
             "body": {
               "mode": "raw",
               "raw": "{\n  \"retailers\": [\"boots\", \"lookfantastic\"],\n  \"threshold\": 0.85\n}"
             },
-            "url": {"raw": "{{baseUrl}}/compare", "host": ["{{baseUrl}}"], "path": ["compare"]},
+            "url": {
+              "raw": "{{baseUrl}}/compare",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "compare"
+              ]
+            },
             "description": "Same thing, limited to the retailers you name. Use the folder-name form: boots, john_lewis, marks_and_spencer, allbeauty, asos, amazon_uk, lookfantastic."
+          }
+        }
+      ]
+    },
+    {
+      "name": "6. The queue",
+      "item": [
+        {
+          "name": "Queue status",
+          "request": {
+            "method": "GET",
+            "url": {
+              "raw": "{{baseUrl}}/queue",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "queue"
+              ]
+            },
+            "description": "What is running, what is waiting, and what finished recently.\n\nRetailers run ONE AT A TIME on purpose. Several browser-driven crawls at once starve each other of DNS and network -- three together turned a 54-minute Lookfantastic run into 30 hours.\n\n  running  - the crawl in progress, or null\n  queued   - waiting, in the order they will run\n  recent   - the last 20 finished, newest first\n\nJob status mirrors run.py's exit codes: ok, failed, skipped, cancelled, stopped.",
+            "header": []
+          }
+        },
+        {
+          "name": "Queue three at once",
+          "request": {
+            "method": "POST",
+            "url": {
+              "raw": "{{baseUrl}}/scrape",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "scrape"
+              ]
+            },
+            "description": "Send this three times, changing `retailer` each time. All three are accepted immediately; only the first starts.\n\nThe response tells you where you are:\n  position        place in the queue\n  will_start_now  true only for the first\n\nSo you can fire all seven retailers and forget about ordering.",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"retailer\": \"marksandspencer\",\n  \"brands\": [\n    \"Clinique\"\n  ],\n  \"max_products\": 5\n}"
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "const b = pm.response.json();",
+                  "console.log(b.retailer + ' -> position ' + b.position + ', starts now: ' + b.will_start_now);"
+                ],
+                "type": "text/javascript"
+              }
+            }
+          ]
+        },
+        {
+          "name": "Stop the running scrape",
+          "request": {
+            "method": "POST",
+            "url": {
+              "raw": "{{baseUrl}}/queue/stop",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "queue",
+                "stop"
+              ]
+            },
+            "description": "Stops the crawl in progress. Anything queued behind it still runs.\n\nThe retailer's lock is cleared as part of stopping -- without that it would sit on disk and the next six hours of runs for that retailer would be skipped as 'already running'.\n\nProducts already flushed to products.partial.jsonl survive, so a stopped crawl still leaves what it had collected. There is no manifest, which is itself the signal the run did not finish.\n\nReturns {\"stopped\": null} if nothing was running.",
+            "header": []
+          }
+        },
+        {
+          "name": "Stop everything",
+          "request": {
+            "method": "POST",
+            "url": {
+              "raw": "{{baseUrl}}/queue/stop?clear_queue=true",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "queue",
+                "stop"
+              ],
+              "query": [
+                {
+                  "key": "clear_queue",
+                  "value": "true"
+                }
+              ]
+            },
+            "description": "Stops the current crawl AND drops everything still waiting.\n\nUse before a deploy or a restart.",
+            "header": []
+          }
+        },
+        {
+          "name": "Cancel a queued job",
+          "request": {
+            "method": "DELETE",
+            "url": {
+              "raw": "{{baseUrl}}/queue/{{job_id}}",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "queue",
+                "{{job_id}}"
+              ]
+            },
+            "description": "Removes one job that has NOT started yet.\n\nTake the job_id from GET /queue -> queued[].job_id.\n\nA job already running is left alone -- use POST /queue/stop for that. Returns 404 if the job has started or does not exist.",
+            "header": []
           }
         }
       ]
