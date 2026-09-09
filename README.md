@@ -42,7 +42,6 @@ GET  /runs/{run_id}/products
 GET  /runs/{run_id}/campaigns
 GET  /runs/{run_id}/log
 GET  /retailers                the adapters and what each supports
-POST /compare                  cross-retailer price comparison
 ```
 
 Asking for a retailer that is already running returns **409**, not a second
@@ -227,12 +226,21 @@ change without sending a request.
 
 ## Running on a schedule
 
-`run_all.py` is the entry point a cron job calls. It runs every retailer in
-sequence and returns one exit code, so the schedule is a single line:
+`scrape_job.py` is the entry point a schedule calls. Edit three settings at
+the top of it -- which retailers, which brands, and whether to fetch campaigns
+only -- then point Windows Task Scheduler at it:
+
+```
+Program    <this folder>\.venv\Scripts\python.exe
+Arguments  scrape_job.py
+Start in   <this folder>
+```
+
+On Linux the same file is one cron line:
 
 ```bash
 # 06:00 and 18:00 UTC
-0 6,18 * * *  cd /srv/scraper && .venv/bin/python run_all.py
+0 6,18 * * *  cd /srv/scraper && .venv/bin/python scrape_job.py
 ```
 
 Retailers run **one at a time, never together**. Three browser-driven crawls
@@ -256,7 +264,7 @@ existed every run exited `0`, including one that had 1,501 of its 1,840
 requests refused and produced five products.
 
 Two thresholds are deliberately adjustable, because failing a *good* run is
-just as expensive. `REFUSAL_LIMITS` in `run_all.py` raises the bar for a
+just as expensive. `REFUSAL_LIMITS` in `scrape_job.py` raises the bar for a
 retailer that refuses often but still delivers — John Lewis produced 770
 products in a run that refused 33.8% of its requests. And only an adapter
 declaring `confirms_brand_stocking` is judged on empty brands: ASOS stocks
@@ -265,23 +273,25 @@ it never had would page someone for nothing.
 
 ### Where a run puts its results
 
+One folder per brand, and one file per run inside it. Every file a single
+run writes carries the same timestamp.
+
 ```
-output/john_lewis/2026/09/07/14-30-00/
-    johnlewis_clinique_products.csv   one per brand
-    johnlewis_campaigns.csv           one per retailer
-    johnlewis_rejected.csv
-    johnlewis.json
-    run.log                           every request, warning and error
-    manifest.json                     what happened, and whether to trust it
+output/john_lewis/
+    clinique/2026-09-07_14-30-00.json     that brand's products
+    clinique/2026-09-07_14-30-00.csv
+    mac/2026-09-07_14-30-00.json
+    campaigns/2026-09-07_14-30-00.json    every offer the shop is running
+    rejected/2026-09-07_14-30-00.csv      what was refused, and why
+    logs/2026-09-07_14-30-00.log          every request, warning and error
+    manifest/2026-09-07_14-30-00.json     what happened, and whether to trust it
 ```
 
-Timestamps are **UTC** and zero-padded, and both matter: British clocks move
-twice a year, so in local time 01:30 happens twice each October — two runs,
-one folder, the second erasing the first — and unpadded, month `10` sorts
-before month `2`.
+Timestamps are **UTC**: British clocks move twice a year, so in local time
+01:30 happens twice each October, and two runs would share a filename.
 
-Nothing is ever overwritten, so `changes.py --latest` compares a retailer's
-two most recent scheduled runs directly.
+Nothing is ever overwritten. Opening one brand's folder shows every run of
+that brand at that shop, oldest to newest.
 
 ### manifest.json
 
@@ -350,11 +360,10 @@ which directory you run the command from. Use `--out-dir` to change that.
 ### A "from" price is never ranked as a real price
 
 A John Lewis size range quotes "£33.60 - £156.00", so `current_price` is the
-cheapest size and `price_is_from` is true. `compare.py` excludes those from
-the cheapest/price-gap ranking and reports them under `from_price_offers`
-instead -- the offer stays visible, it just is not compared. Ranking it would
-have named John Lewis cheapest by £52.80 against Lookfantastic's £86.40 for
-the 50ml, a gap that does not exist.
+cheapest size and `price_is_from` is true. Anything carrying that flag is
+excluded from cheapest/price-gap ranking -- the offer stays visible, it just
+is not compared. Ranking it would have named John Lewis cheapest by £52.80
+against Lookfantastic's £86.40 for the 50ml, a gap that does not exist.
 
 ### A brand that returns nothing says so
 
@@ -363,14 +372,6 @@ brand produced nothing". The run summary breaks the count down per brand and
 prints a note for any that returned zero, because an unstocked brand and a
 brand with no promotions otherwise look identical. Boots does not stock Tom
 Ford, and now says so.
-
-### Change detection refuses incomparable runs
-
-`changes.py` compares two runs of the same retailer AND the same brands, in
-chronological order. Diffing different brand sets would report every product
-in the first as removed and every one in the second as added; reversing the
-order reports every price cut as a rise. Both raise rather than producing
-plausible-looking nonsense.
 
 ### Products and campaigns are separate
 
@@ -422,9 +423,11 @@ look healthier than it is.
 
 ```
 run.py                     CLI: scrape one retailer
-compare.py                 cross-retailer price comparison
-changes.py                 what changed between two runs
+scrape_job.py              the scheduled job: edit the settings, run it
+api.py                     HTTP API over the scraper
+queue_worker.py            runs queued scrapes one at a time
 spotcheck.py               live verification tool
+audit.py                   independent check of what was published
 run_tests.py               run every test suite
 retailscraper/
   models.py                Product, Campaign, RejectedRecord
@@ -433,7 +436,7 @@ retailscraper/
   validation.py            the validation rules and brand matching
   output.py                JSON + CSV writers
   matching.py              cross-retailer product matching
-  history.py               change detection between runs
+  runs.py                  run paths, logging, locking, manifests
   spider.py                the generic crawler (no retailer knowledge)
   adapters/
     base.py                the adapter interface + registry

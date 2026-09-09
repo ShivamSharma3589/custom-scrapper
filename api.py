@@ -13,7 +13,6 @@ Asking twice for the same retailer gets a 409, not a second crawl.
     GET  /runs/{run_id}/log
     GET  /runs                  every run, newest first
     GET  /retailers             the adapters and what each supports
-    POST /compare               cross-retailer price comparison
 """
 
 import json
@@ -61,46 +60,45 @@ class ScrapeRequest(BaseModel):
     )
 
 
-class CompareRequest(BaseModel):
-    retailers: List[str] = Field(
-        default_factory=list,
-        description="Compare the newest run of each. Empty means every retailer.",
-    )
-    threshold: float = 0.85
-
-
 # --- reading what the scraper wrote ---------------------------------------
 
-def _run_folders() -> List[Path]:
-    """Every run folder, newest first: <retailer>/YYYY/MM/DD/HH-MM-SS/."""
-    folders = []
-    for manifest in OUTPUT.rglob("manifest.json"):
-        parts = manifest.parent.relative_to(OUTPUT).parts
-        if len(parts) == 5:
-            folders.append(manifest.parent)
-    return sorted(folders, key=lambda p: p.parts[-4:], reverse=True)
+def _runs() -> List[Path]:
+    """Every run's manifest file, newest first.
+
+    A manifest lives at `<retailer>/manifest/<timestamp>.json`, so the list of
+    manifests is the list of runs, and the filename is the run's timestamp.
+    """
+    return sorted(OUTPUT.glob("*/manifest/*.json"),
+                  key=lambda p: p.stem, reverse=True)
 
 
-def _manifest(folder: Path) -> Dict[str, Any]:
+def _manifest(path: Path) -> Dict[str, Any]:
     try:
-        return json.loads((folder / "manifest.json").read_text(encoding="utf-8"))
+        return json.loads(path.read_text(encoding="utf-8"))
     except Exception:
         return {}
 
 
 def _find_run(run_id: str) -> Path:
-    for folder in _run_folders():
-        if _manifest(folder).get("run_id") == run_id:
-            return folder
+    for path in _runs():
+        if _manifest(path).get("run_id") == run_id:
+            return path
     raise HTTPException(404, f"no run with id {run_id!r}")
 
 
-def _records(folder: Path, key: str) -> List[Dict[str, Any]]:
-    """Gather `products` or `campaigns` from a run's per-brand files."""
+def _records(manifest_path: Path, key: str) -> List[Dict[str, Any]]:
+    """Gather `products`, `campaigns` or `rejected` from one run's files.
+
+    A run's files are the ones sharing its timestamp, spread across the
+    retailer's brand folders.
+    """
+    root = manifest_path.parent.parent
+    stamp = manifest_path.stem
+
     seen: Dict[str, Dict[str, Any]] = {}
     rows: List[Dict[str, Any]] = []
-    for path in sorted(folder.glob("*.json")):
-        if path.name == "manifest.json":
+    for path in sorted(root.glob(f"*/{stamp}.json")):
+        if path.parent.name == "manifest":
             continue
         try:
             payload = json.loads(path.read_text(encoding="utf-8"))
@@ -210,8 +208,8 @@ def list_runs(
 ) -> List[Dict[str, Any]]:
     """Every run, newest first."""
     out = []
-    for folder in _run_folders():
-        manifest = _manifest(folder)
+    for path in _runs():
+        manifest = _manifest(path)
         if retailer and manifest.get("retailer_key") != retailer:
             continue
         out.append({
@@ -221,7 +219,7 @@ def list_runs(
             "products": manifest.get("products"),
             "campaigns": manifest.get("campaigns"),
             "started_at": manifest.get("started_at"),
-            "folder": str(folder.relative_to(OUTPUT)),
+            "timestamp": path.stem,
         })
         if len(out) >= limit:
             break
@@ -232,10 +230,11 @@ def list_runs(
 def latest_run(retailer_key: str) -> Dict[str, Any]:
     """The most recent run of one retailer, and whether it is still going."""
     running = _is_running(retailer_key)
-    for folder in _run_folders():
-        manifest = _manifest(folder)
+    for path in _runs():
+        manifest = _manifest(path)
         if manifest.get("retailer_key") == retailer_key:
-            return {**manifest, "running": running is not None}
+            return {**manifest, "timestamp": path.stem,
+                    "running": running is not None}
     if running:
         return {"status": "running", "retailer_key": retailer_key,
                 "held_by": running,
@@ -246,9 +245,8 @@ def latest_run(retailer_key: str) -> Dict[str, Any]:
 @app.get("/runs/{run_id}")
 def get_run(run_id: str) -> Dict[str, Any]:
     """One run's manifest: status, counts, refusals, duration."""
-    folder = _find_run(run_id)
-    manifest = _manifest(folder)
-    return {**manifest, "folder": str(folder.relative_to(OUTPUT))}
+    path = _find_run(run_id)
+    return {**_manifest(path), "timestamp": path.stem}
 
 
 @app.get("/runs/{run_id}/products")
@@ -279,55 +277,13 @@ def get_rejected(run_id: str) -> Dict[str, Any]:
 
 @app.get("/runs/{run_id}/log", response_class=PlainTextResponse)
 def get_log(run_id: str, tail: int = Query(200, ge=1, le=10000)) -> str:
-    """The last lines of run.log -- the first place to look at a failure."""
-    path = _find_run(run_id) / "run.log"
+    """The last lines of this run's log -- the first place to look at a failure."""
+    manifest_path = _find_run(run_id)
+    path = (manifest_path.parent.parent / "logs" / f"{manifest_path.stem}.log")
     if not path.exists():
         raise HTTPException(404, "this run has no log")
     lines = path.read_text(encoding="utf-8", errors="replace").splitlines()
     return "\n".join(lines[-tail:])
-
-
-@app.post("/compare")
-def compare(request: CompareRequest) -> Dict[str, Any]:
-    """Compare the newest run of each retailer. Reads files, so it is quick."""
-    from retailscraper.matching import match_across_retailers
-
-    wanted = {r.casefold() for r in request.retailers}
-    products: List[Dict[str, Any]] = []
-    used: List[str] = []
-    seen_retailers = set()
-
-    for folder in _run_folders():
-        manifest = _manifest(folder)
-        key = manifest.get("retailer_key")
-        if not key or key in seen_retailers:
-            continue
-        if wanted and key.casefold() not in wanted:
-            continue
-        if manifest.get("status") != "ok":
-            continue
-        seen_retailers.add(key)
-        rows = _records(folder, "products")
-        if rows:
-            products.extend(rows)
-            used.append(manifest.get("retailer", key))
-
-    if len(used) < 2:
-        raise HTTPException(400, {
-            "error": "need successful runs from at least two retailers",
-            "found": used,
-        })
-
-    matches, unmatched = match_across_retailers(
-        products, threshold=request.threshold
-    )
-    return {
-        "retailers": used,
-        "threshold": request.threshold,
-        "matched": len(matches),
-        "single_retailer_products": len(unmatched),
-        "products": [m.to_dict() for m in matches],
-    }
 
 
 @app.get("/health")
@@ -341,7 +297,7 @@ def health() -> Dict[str, Any]:
     return {
         "ok": True,
         "output_dir": str(OUTPUT),
-        "runs_on_disk": len(_run_folders()),
+        "runs_on_disk": len(_runs()),
         "running": {k: v for k, v in running.items() if v},
     }
 

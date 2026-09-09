@@ -163,20 +163,20 @@ def group_by_brand(rows: List[Dict[str, Any]]) -> Dict[str, List[Dict[str, Any]]
     return grouped
 
 
-def write_all(payload: Dict[str, Any], out_dir: Path, basename: str = "") -> List[Path]:
-    """Write one run's results: a file per brand, plus the shared views.
+def write_all(payload: Dict[str, Any], paths) -> List[Path]:
+    """Write one run's results into this retailer's folders.
 
-        clinique.json          Clinique's products, and the run's campaigns
-        clinique_products.csv
-        campaigns.csv          every campaign the retailer is running
-        rejected.csv           what was refused, and why
+        boots/clinique/2026-09-09_17-07-22.json   Clinique's products
+        boots/clinique/2026-09-09_17-07-22.csv
+        boots/campaigns/2026-09-09_17-07-22.json  every campaign running
+        boots/rejected/2026-09-09_17-07-22.csv    what was refused, and why
 
-    Names carry the brand only -- the folder already says which retailer and
-    which run. Campaigns repeat in each brand's JSON so one file answers
-    "what is this retailer doing to this brand"; `campaigns.csv` is the
-    single copy.
+    One folder per brand, so opening it shows that brand's whole history at
+    this shop. Every file from one run shares a timestamp.
 
-    `basename` is accepted and ignored, so existing callers keep working.
+    Campaigns repeat inside each brand's JSON, so one file answers "what is
+    this retailer doing to this brand". The campaigns folder holds the single
+    retailer-wide copy.
     """
     written: List[Path] = []
 
@@ -188,7 +188,6 @@ def write_all(payload: Dict[str, Any], out_dir: Path, basename: str = "") -> Lis
     campaigns = payload.get("campaigns") or []
 
     for brand, rows in sorted(group_by_brand(payload["products"]).items()):
-        stem = _brand_filename_part(brand)
         written.append(write_json({
             **shared,
             "brand": brand,
@@ -199,19 +198,18 @@ def write_all(payload: Dict[str, Any], out_dir: Path, basename: str = "") -> Lis
                 r for r in payload.get("rejected") or []
                 if (r.get("payload") or {}).get("brand_matched_to") == brand
             ],
-        }, out_dir / f"{stem}.json"))
+        }, paths.file(_brand_filename_part(brand), ".json")))
 
     for brand, rows in sorted(group_by_brand(products).items()):
         written.append(_write_csv(
             rows, PRODUCT_COLUMNS,
-            out_dir / f"{_brand_filename_part(brand)}_products.csv",
+            paths.file(_brand_filename_part(brand), ".csv"),
         ))
 
-    # Retailer-wide, so named for the retailer's run rather than a brand.
+    written.append(write_json({**shared, "campaigns": campaigns},
+                              paths.file("campaigns", ".json")))
     written.append(_write_csv(campaigns, CAMPAIGN_COLUMNS,
-                              out_dir / "campaigns.csv"))
-    written.append(write_json(
-        {**shared, "campaigns": campaigns}, out_dir / "campaigns.json"))
+                              paths.file("campaigns", ".csv")))
     written.append(_write_csv(_flat_rejections(payload), REJECTED_COLUMNS,
-                              out_dir / "rejected.csv"))
+                              paths.file("rejected", ".csv")))
     return written

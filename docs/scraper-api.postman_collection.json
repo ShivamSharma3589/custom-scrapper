@@ -384,64 +384,7 @@
       ]
     },
     {
-      "name": "5. Compare retailers",
-      "item": [
-        {
-          "name": "Compare everything scraped",
-          "request": {
-            "method": "POST",
-            "header": [
-              {
-                "key": "Content-Type",
-                "value": "application/json"
-              }
-            ],
-            "body": {
-              "mode": "raw",
-              "raw": "{\n  \"threshold\": 0.85\n}"
-            },
-            "url": {
-              "raw": "{{baseUrl}}/compare",
-              "host": [
-                "{{baseUrl}}"
-              ],
-              "path": [
-                "compare"
-              ]
-            },
-            "description": "Where one retailer undercuts another on the same product - the question the project exists to answer.\n\nUses the newest successful run of every retailer. Needs at least two.\n\n`threshold` is title similarity, 0-1. Lower it for more matches, at the cost of pairing products that only read alike.\n\nCheck two flags before quoting a gap:\n  rrp_disagreement  - the shops disagree on the RRP, so these may be different products\n  currency_mismatch - not all offers were in one currency"
-          }
-        },
-        {
-          "name": "Compare two named retailers",
-          "request": {
-            "method": "POST",
-            "header": [
-              {
-                "key": "Content-Type",
-                "value": "application/json"
-              }
-            ],
-            "body": {
-              "mode": "raw",
-              "raw": "{\n  \"retailers\": [\"boots\", \"lookfantastic\"],\n  \"threshold\": 0.85\n}"
-            },
-            "url": {
-              "raw": "{{baseUrl}}/compare",
-              "host": [
-                "{{baseUrl}}"
-              ],
-              "path": [
-                "compare"
-              ]
-            },
-            "description": "Same thing, limited to the retailers you name. Use the folder-name form: boots, john_lewis, marks_and_spencer, allbeauty, asos, amazon_uk, lookfantastic."
-          }
-        }
-      ]
-    },
-    {
-      "name": "6. The queue",
+      "name": "5. The queue",
       "item": [
         {
           "name": "Queue status",

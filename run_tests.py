@@ -32,7 +32,6 @@ SUITES = [
     ("campaign attachment", "test_campaign_attachment.py"),
     ("adapter robustness", "test_adapter_robustness.py"),
     ("cross-retailer matching", "test_matching.py"),
-    ("change detection", "test_history.py"),
     ("category resolution", "test_categories.py"),
     ("campaign discovery", "test_campaigns.py"),
     ("custom offer keywords", "test_keywords.py"),

@@ -28,7 +28,7 @@ from retailscraper.runs import (  # noqa: E402
     new_run_id,
     refusal_rate,
     retailer_folder_name,
-    run_folder,
+    RunPaths,
     run_lock,
     verdict,
     write_manifest,
@@ -68,18 +68,23 @@ def run() -> int:
         got = retailer_folder_name(FakeAdapter(display))
         check(f"{display:18} -> {got}", got == want, got)
 
-    print("\n=== a run folder is dated, padded and in UTC ===")
+    print("\n=== a run's files are retailer/brand/timestamp, in UTC ===")
     when = datetime(2026, 9, 7, 14, 30, 0, tzinfo=timezone.utc)
-    folder = run_folder(Path("output"), FakeAdapter("John Lewis"), when)
-    check("path is retailer/YYYY/MM/DD/HH-MM-SS",
-          folder.as_posix().endswith("john_lewis/2026/09/07/14-30-00"),
-          folder.as_posix())
+    paths = RunPaths(Path("output"), FakeAdapter("John Lewis"), when)
+    check("a brand's file",
+          paths.file("clinique", ".json").as_posix().endswith(
+              "john_lewis/clinique/2026-09-07_14-30-00.json"),
+          paths.file("clinique", ".json").as_posix())
+    check("the manifest sits beside it",
+          paths.file("manifest", ".json").as_posix().endswith(
+              "john_lewis/manifest/2026-09-07_14-30-00.json"))
+    check("every file from one run shares a stamp",
+          paths.file("logs", ".log").stem == paths.file("campaigns", ".json").stem)
     # Unpadded, month 10 sorts before month 2 and a listing is out of order.
-    january = run_folder(Path("o"), FakeAdapter("X"), when.replace(month=1, day=2))
-    october = run_folder(Path("o"), FakeAdapter("X"), when.replace(month=10, day=2))
+    january = RunPaths(Path("o"), FakeAdapter("X"), when.replace(month=1, day=2))
+    october = RunPaths(Path("o"), FakeAdapter("X"), when.replace(month=10, day=2))
     check("months sort chronologically as text",
-          january.as_posix() < october.as_posix(),
-          (january.as_posix(), october.as_posix()))
+          january.stamp < october.stamp, (january.stamp, october.stamp))
 
     print("\n=== run ids sort by time and stay unique ===")
     early = new_run_id(when)
@@ -182,7 +187,7 @@ def run() -> int:
     import logging
     from retailscraper.runs import capture_logger, open_run_log
     with tempfile.TemporaryDirectory() as tmp:
-        handler = open_run_log(Path(tmp))
+        handler = open_run_log(Path(tmp) / "logs" / "run.log")
         crawler_log = logging.getLogger("scrapling.spiders.test-detach")
         crawler_log.propagate = False
         capture_logger(handler, crawler_log)
@@ -229,8 +234,7 @@ def run() -> int:
 
     print("\n=== products are saved before the run ends ===")
     with tempfile.TemporaryDirectory() as tmp:
-        folder = Path(tmp)
-        writer = PartialWriter(folder, every=3)
+        writer = PartialWriter(Path(tmp) / "partial" / "run.jsonl", every=3)
         for i in range(5):
             writer.add({"product_id": f"p{i}"})
         # Three of five have crossed the threshold; two are still pending.
@@ -262,7 +266,7 @@ def run() -> int:
             warnings=["no brand page for 'Weleda'"],
             files=["johnlewis_clinique_products.csv"],
         )
-        path = write_manifest(folder, manifest)
+        path = write_manifest(folder / "manifest" / "run.json", manifest)
         check("it is written", path.exists())
         for field in ("run_id", "retailer", "started_at", "finished_at",
                       "status", "products", "campaigns", "rejected",

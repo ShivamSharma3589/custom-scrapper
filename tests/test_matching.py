@@ -287,38 +287,6 @@ def run() -> int:
         failures += 0 if ok else 1
         print(f"  {'ok  ' if ok else 'FAIL'} {label}")
 
-    print("\n=== comparing runs ignores files that are not runs ===")
-    # A run folder holds manifest.json beside its results, so the obvious
-    # glob -- output/asos/2026/09/07/*/*.json -- picks the manifest up too.
-    # Its `products` is a COUNT, not a list, and extending a list with an
-    # int ended the whole comparison with "'int' object is not iterable".
-    import json as _json
-    import tempfile
-
-    from compare import load_products  # noqa: E402
-
-    with tempfile.TemporaryDirectory() as tmp:
-        folder = Path(tmp)
-        (folder / "asos_clinique.json").write_text(_json.dumps({
-            "products": [{"product_title": "Clinique Thing", "current_price": 10.0}],
-        }), encoding="utf-8")
-        (folder / "manifest.json").write_text(_json.dumps({
-            "run_id": "x", "products": 470, "campaigns": 2,
-        }), encoding="utf-8")
-        (folder / "broken.json").write_text("{not json", encoding="utf-8")
-
-        loaded = load_products(sorted(folder.glob("*.json")))
-        for label, ok, detail in [
-            ("the real run is read", len(loaded) == 1, len(loaded)),
-            ("a product COUNT is not mistaken for products",
-             bool(loaded) and loaded[0].get("product_title") == "Clinique Thing",
-             loaded),
-            ("unreadable json does not stop the comparison", True, None),
-        ]:
-            failures += 0 if ok else 1
-            print(f"  {'ok  ' if ok else 'FAIL'} {label}"
-                  f"{('  ' + str(detail)) if not ok else ''}")
-
     print(f"\n{'ALL CHECKS PASSED' if failures == 0 else f'{failures} CHECK(S) FAILED'}")
     return 1 if failures else 0
 

@@ -46,9 +46,9 @@ from retailscraper.runs import (
     new_run_id,
     PartialWriter,
     RunLockBusy,
+    RunPaths,
     open_run_log,
     refusal_rate,
-    run_folder,
     run_lock,
     utc_now,
     verdict,
@@ -139,14 +139,6 @@ def parse_args(argv=None) -> argparse.Namespace:
         help="List the available retailer adapters and exit.",
     )
     parser.add_argument(
-        "--no-run-folders",
-        dest="run_folders",
-        action="store_false",
-        help="Write straight into --out-dir instead of a timestamped run "
-             "folder. Handy when experimenting by hand; a scheduled run "
-             "should keep the folders so it never overwrites the run before.",
-    )
-    parser.add_argument(
         "--refusal-limit",
         type=float,
         default=DEFAULT_REFUSAL_LIMIT,
@@ -232,30 +224,27 @@ def main(argv=None) -> int:
     print("Starting crawl. This is deliberately slow so we stay within the "
           "retailer's rate limits.\n")
 
-    # Every run gets its own folder, so a scheduled run never overwrites the
-    # one before it, and its log sits beside the data it produced.
+    # Every file this run writes is stamped with the same timestamp, so a
+    # scheduled run never overwrites the one before it.
     started_at = utc_now()
     run_id = new_run_id(started_at)
-    base_dir = out_dir
-    if args.run_folders:
-        out_dir = run_folder(base_dir, adapter, started_at)
+    paths = RunPaths(out_dir, adapter, started_at)
 
     # skip if this retailer is already running
     lock = None
-    if args.run_folders:
-        try:
-            lock = run_lock(base_dir, adapter)
-            lock.__enter__()
-        except RunLockBusy as exc:
-            print(f"skipped: {exc}", file=sys.stderr)
-            return 3
+    try:
+        lock = run_lock(out_dir, adapter)
+        lock.__enter__()
+    except RunLockBusy as exc:
+        print(f"skipped: {exc}", file=sys.stderr)
+        return 3
 
     # always release the lock and close the log, even if the crawl crashes
     log_handler = None
     partial_writer = None
     prepare_warnings: List[str] = []
     try:
-        log_handler = open_run_log(out_dir) if args.run_folders else None
+        log_handler = open_run_log(paths.file("logs", ".log"))
         logging.getLogger(__name__).info(
             "run %s starting: %s, brands=%s", run_id, adapter.display_name,
             ", ".join(args.brands) or "(campaigns only)",
@@ -269,7 +258,7 @@ def main(argv=None) -> int:
             print(f"warning: {warning}", file=sys.stderr)
 
         # Save as the crawl goes, so a run that is killed leaves usable data.
-        partial_writer = PartialWriter(out_dir) if args.run_folders else None
+        partial_writer = PartialWriter(paths.file("partial", ".jsonl"))
 
         spider = RetailPromotionSpider(
             adapter=adapter,
@@ -322,7 +311,7 @@ def main(argv=None) -> int:
         if partial_writer:
             partial_writer.flush()
 
-        written = write_all(payload, out_dir)
+        written = write_all(payload, paths)
 
         # a partial file left behind is the signal that a run never finished
         if partial_writer:
@@ -425,24 +414,24 @@ def main(argv=None) -> int:
             if count:
                 print(f"  skipped           : {count} {label}")
         # written whatever the verdict -- a failed run's record is the useful one
-        if args.run_folders:
-            manifest = build_manifest(
-                run_id=run_id,
-                adapter=adapter,
-                started_at=started_at,
-                finished_at=utc_now(),
-                status=status,
-                stats=stats,
-                products=run_stats["product_records"],
-                campaigns=run_stats["campaign_records"],
-                rejected=run_stats["rejected_records"],
-                brands_requested=args.brands,
-                brands_empty=empty,
-                reason=reason,
-                warnings=prepare_warnings,
-                files=[Path(p).name for p in written],
-            )
-            written.append(write_manifest(out_dir, manifest))
+        manifest = build_manifest(
+            run_id=run_id,
+            adapter=adapter,
+            started_at=started_at,
+            finished_at=utc_now(),
+            status=status,
+            stats=stats,
+            products=run_stats["product_records"],
+            campaigns=run_stats["campaign_records"],
+            rejected=run_stats["rejected_records"],
+            brands_requested=args.brands,
+            brands_empty=empty,
+            reason=reason,
+            warnings=prepare_warnings,
+            files=[str(Path(p).relative_to(paths.root)) for p in written],
+        )
+        written.append(
+            write_manifest(paths.file("manifest", ".json"), manifest))
 
         print("\n  files written:")
         for path in written:
@@ -457,27 +446,27 @@ def main(argv=None) -> int:
         # mistaken for complete data
         logging.getLogger(__name__).exception("run %s failed", run_id)
         print(f"error: {exc}", file=sys.stderr)
-        if args.run_folders:
-            saved = partial_writer.written if partial_writer else 0
-            if partial_writer:
-                partial_writer.flush()
-                saved = partial_writer.written
-            write_manifest(out_dir, build_manifest(
-                run_id=run_id,
-                adapter=adapter,
-                started_at=started_at,
-                finished_at=utc_now(),
-                status=STATUS_INCOMPLETE,
-                stats={},
-                products=saved,
-                campaigns=0,
-                rejected=0,
-                brands_requested=args.brands,
-                brands_empty=[],
-                reason=f"{type(exc).__name__}: {exc}",
-                warnings=prepare_warnings,
-                files=[PartialWriter.FILENAME] if saved else [],
-            ))
+        saved = 0
+        if partial_writer:
+            partial_writer.flush()
+            saved = partial_writer.written
+        write_manifest(paths.file("manifest", ".json"), build_manifest(
+            run_id=run_id,
+            adapter=adapter,
+            started_at=started_at,
+            finished_at=utc_now(),
+            status=STATUS_INCOMPLETE,
+            stats={},
+            products=saved,
+            campaigns=0,
+            rejected=0,
+            brands_requested=args.brands,
+            brands_empty=[],
+            reason=f"{type(exc).__name__}: {exc}",
+            warnings=prepare_warnings,
+            files=[str(paths.file("partial", ".jsonl").relative_to(paths.root))]
+                  if saved else [],
+        ))
         return 2
     finally:
         close_run_log(log_handler)

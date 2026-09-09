@@ -74,38 +74,43 @@ def retailer_folder_name(adapter) -> str:
     return re.sub(r"[^a-z0-9]+", "_", name.casefold()).strip("_") or "unknown"
 
 
-def run_folder(base: Path, adapter, when: Optional[datetime] = None) -> Path:
-    """`<base>/<retailer>/YYYY/MM/DD/HH-MM-SS`, in UTC.
+class RunPaths:
+    """Where one run's files go: `<base>/<retailer>/<folder>/<timestamp>.<ext>`.
 
-    UTC rather than local time because British clocks move twice a year. In
-    October 01:30 happens twice, so two runs would land in one folder and the
-    second would erase the first; in March it does not happen at all.
+    A run is spread across sibling folders rather than gathered into one, so
+    a brand's whole history at a retailer sits in a single directory:
 
-    Zero-padded because folder names sort as text: unpadded, month 10 sorts
-    before month 2.
+        output/boots/clinique/2026-09-09_17-07-22.json
+        output/boots/campaigns/2026-09-09_17-07-22.json
+        output/boots/manifest/2026-09-09_17-07-22.json
+        output/boots/logs/2026-09-09_17-07-22.log
+
+    The timestamp ties them together: same stamp, same run. It is UTC,
+    because British clocks move twice a year -- in October 01:30 happens
+    twice, and two runs would otherwise share a name.
     """
-    when = when or utc_now()
-    return (
-        base
-        / retailer_folder_name(adapter)
-        / f"{when.year:04d}"
-        / f"{when.month:02d}"
-        / f"{when.day:02d}"
-        / when.strftime("%H-%M-%S")
-    )
+
+    def __init__(self, base: Path, adapter, when: Optional[datetime] = None) -> None:
+        when = when or utc_now()
+        self.root = Path(base) / retailer_folder_name(adapter)
+        self.stamp = when.strftime("%Y-%m-%d_%H-%M-%S")
+
+    def file(self, folder: str, suffix: str) -> Path:
+        """One file in one of this retailer's folders."""
+        return self.root / folder / f"{self.stamp}{suffix}"
 
 
 # --- logging --------------------------------------------------------------
 
-def open_run_log(folder: Path, level: int = logging.INFO) -> logging.Handler:
-    """Send everything logged during this run to `run.log` in its folder.
+def open_run_log(path: Path, level: int = logging.INFO) -> logging.Handler:
+    """Send everything logged during this run to its own log file.
 
     Attached to the root logger so the crawler's own output is captured too --
     the request-by-request record is what makes a failed run diagnosable
     afterwards, and it is the part that used to vanish with the terminal.
     """
-    folder.mkdir(parents=True, exist_ok=True)
-    handler = logging.FileHandler(folder / "run.log", encoding="utf-8")
+    path.parent.mkdir(parents=True, exist_ok=True)
+    handler = logging.FileHandler(path, encoding="utf-8")
     handler.setFormatter(
         logging.Formatter("%(asctime)s %(levelname)-7s %(name)s: %(message)s")
     )
@@ -355,18 +360,17 @@ def build_manifest(
     }
 
 
-def write_manifest(folder: Path, manifest: Dict[str, Any]) -> Path:
-    folder.mkdir(parents=True, exist_ok=True)
-    path = folder / "manifest.json"
+def write_manifest(path: Path, manifest: Dict[str, Any]) -> Path:
+    path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(
         json.dumps(manifest, indent=2, ensure_ascii=False), encoding="utf-8"
     )
     return path
 
 
-def read_manifest(folder: Path) -> Optional[Dict[str, Any]]:
+def read_manifest(path: Path) -> Optional[Dict[str, Any]]:
     try:
-        return json.loads((folder / "manifest.json").read_text(encoding="utf-8"))
+        return json.loads(Path(path).read_text(encoding="utf-8"))
     except Exception:
         return None
 
@@ -381,16 +385,13 @@ class PartialWriter:
     work. Products are appended here as newline-delimited JSON, which can be
     written one record at a time and read back after a crash.
 
-    The partial file is deleted once the real output is written, so a folder
-    holding one is itself the signal that the run did not finish.
+    The partial file is deleted once the real output is written, so one left
+    behind is itself the signal that the run did not finish.
     """
 
-    FILENAME = "products.partial.jsonl"
-
-    def __init__(self, folder: Path, every: int = 50) -> None:
-        self.folder = folder
+    def __init__(self, path: Path, every: int = 50) -> None:
+        self.path = Path(path)
         self.every = max(1, every)
-        self.path = folder / self.FILENAME
         self._pending: List[Dict[str, Any]] = []
         self.written = 0
 
@@ -402,7 +403,7 @@ class PartialWriter:
     def flush(self) -> None:
         if not self._pending:
             return
-        self.folder.mkdir(parents=True, exist_ok=True)
+        self.path.parent.mkdir(parents=True, exist_ok=True)
         with self.path.open("a", encoding="utf-8") as handle:
             for record in self._pending:
                 handle.write(json.dumps(record, ensure_ascii=False) + "\n")
