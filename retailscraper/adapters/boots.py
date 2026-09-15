@@ -9,8 +9,8 @@ because it looks like success. `looks_blocked` lets the crawler spot a
 challenge page rather than parse it as a product.
 
 **Its sitemap is unreachable.** robots.txt names one, but it returns the same
-challenge even through the browser, so discovery uses paginated brand listings
-(`/<brand>/<brand>-full-range?paging.index=N`).
+challenge even through the browser, so discovery starts at each brand page
+and follows the product lists it links to, page by page (`?paging.index=N`).
 
 **It publishes microdata, not JSON-LD.** No `application/ld+json` anywhere;
 the same facts are in schema.org `itemprop` attributes.
@@ -21,6 +21,7 @@ Product URLs are `https://www.boots.com/<slug>-<numeric id>`.
 import re
 from datetime import datetime, timezone
 from typing import Iterable, List, Optional, Sequence
+from urllib.parse import parse_qs, urlparse
 
 from ..models import SCOPE_CATEGORY, SCOPE_PRODUCT, SCOPE_SITEWIDE, Campaign, Product
 from ..normalize import (
@@ -57,8 +58,12 @@ class BootsAdapter(RetailerAdapter):
     # challenge page even through a real browser. Discovery uses listing pages.
     sitemap_urls: List[str] = []
 
-    #: Products shown per listing page. Boots accepts this as a query param.
+    #: Sent as paging.size. Boots accepts it but shows 48 products a page anyway.
     listing_page_size = 25
+
+    #: Safety stop for one list. At 48 a page this is far past any brand's
+    #: range; it only guards against a list that never stops adding products.
+    MAX_LIST_PAGES = 50
 
     # Boots files each brand's range under category paths such as
     # /clinique/clinique-skincare, so a category filter can be honoured by
@@ -84,9 +89,15 @@ class BootsAdapter(RetailerAdapter):
         "home": "home-fragrance",
     }
 
-    #: Boots gathers its live campaigns on one offers hub. Reachable only via
-    #: a warmed browser session -- a cold request to it is challenged.
+    #: Where offer discovery starts. The other offers pages (about 30:
+    #: /fragrance/fragrance-offers, /offers/makeup-offers, /sale/...) are
+    #: found from the links on this one, see `offer_page_links`.
     CAMPAIGN_HUB_PATHS = ["/offers"]
+
+    def __init__(self) -> None:
+        #: Brands whose page linked no product lists, so only its featured
+        #: products could be collected. Reported by `crawl_warnings`.
+        self._featured_only: set = set()
 
     def warmup_url(self) -> Optional[str]:
         """The homepage, fetched only to get past bot protection.
@@ -125,8 +136,36 @@ class BootsAdapter(RetailerAdapter):
         return (None, None)
 
     def extract_campaign_directory(self, response) -> List[Campaign]:
-        """Every offer advertised on the Boots offers hub."""
-        return self._scan_offer_links(response)
+        """Every offer advertised on a Boots offers page.
+
+        Sale pages are also product grids, so links to a single product are
+        skipped: a product tile is not a campaign.
+        """
+        return [c for c in self._scan_offer_links(response)
+                if not self.is_product_url(c.landing_url or "")]
+
+    def offer_page_links(self, response) -> List[str]:
+        """Every offers or sale page linked from this page.
+
+        Links carrying a query are product lists filtered to one offer, not
+        offers pages, so they are left out.
+        """
+        return [url for url in self._links(response)
+                if "?" not in url
+                and not self.is_product_url(url)
+                and re.search(r"offer|/sale(/|$)", urlparse(url).path)]
+
+    def promotion_key(self, campaign) -> Optional[str]:
+        """Boots' own name for an offer, read from its "shop now" link.
+
+        The link goes to a product list filtered to the offer, for example
+        ?criteria.promotionalText=Save+up+to+20+percent+on+selected+fragrance,
+        and that text is word for word the line each product in the offer
+        shows on its own page.
+        """
+        values = parse_qs(urlparse(campaign.landing_url or "").query).get(
+            "criteria.promotionalText")
+        return values[0] if values else None
 
     def configure_session(self, manager) -> None:
         """Use a stealth browser session, kept alive across the whole crawl.
@@ -147,6 +186,7 @@ class BootsAdapter(RetailerAdapter):
                 network_idle=True,
                 timeout=120_000,
                 max_pages=2,
+                # proxy="http://dmrlxjhc:2unx9qvddqjo@31.59.20.176:6754/",
             ),
         )
 
@@ -158,76 +198,70 @@ class BootsAdapter(RetailerAdapter):
         return re.sub(r"[^a-z0-9]+", "-", brand.strip().lower()).strip("-")
 
     def campaign_seed_urls(self, brands: Sequence[str]) -> List[str]:
-        """None -- the brand hub is now crawled as a listing instead.
-
-        Deliberately empty. The hub used to be seeded here, but it is also a
-        product listing (it is the only route to brands with no
-        "<slug>-full-range" page). Returning it from both places queues one
-        URL twice with two different callbacks; the crawler deduplicates by
-        URL, the campaign callback wins because it is queued first, and no
-        products are ever requested from it. That produced a seven-brand run
-        which fetched every hub and returned 188 Clinique products and nothing
-        for the other six.
-
-        `parse_listing_page` extracts campaigns from every listing it visits,
-        so nothing is lost.
-        """
+        """None. Brand pages are crawled as listings, which read their
+        campaigns too, so seeding them here would only queue them twice."""
         return []
 
     def product_listing_urls(
         self, brand: str, categories: Sequence[str], max_pages: int
     ) -> List[ListingPage]:
-        """Paginated listings for one brand, scoped to categories if given.
+        """Where the crawl starts for one brand.
 
-        Without a category filter this walks the brand's full range; with one
-        it walks each category path instead, which is both narrower and
-        cheaper than fetching everything and discarding most of it.
+        Without categories it is the brand page. That page only shows a few
+        featured products, but it links every product list for the brand,
+        and `more_listing_pages` follows those. The list names cannot be
+        guessed: Clinique has /clinique/clinique-full-range, MAC has
+        /mac/mac-shop-all, Tom Ford has /tom-ford-/tom-ford-all-fragrances.
+
+        With categories it is the first page of each category list, e.g.
+        /clinique/clinique-skincare.
         """
         slug = self._brand_slug(brand)
-
-        if categories:
-            targets = [
-                (
-                    self.CATEGORY_SLUGS.get(c.strip().lower(), self._brand_slug(c)),
-                    c,
-                )
-                for c in categories
-            ]
-        else:
-            targets = [(f"{slug}-full-range", None)]
+        if not categories:
+            return [ListingPage(url=f"https://{self.domain}/{slug}", brand=brand)]
 
         pages = []
-        for path_slug, category in targets:
-            # Category paths are prefixed with the brand slug, matching how
-            # Boots builds them: /clinique/clinique-skincare
-            leaf = path_slug if path_slug.startswith(slug) else f"{slug}-{path_slug}"
-            for index in range(max_pages):
-                pages.append(
-                    ListingPage(
-                        url=(
-                            f"https://{self.domain}/{slug}/{leaf}"
-                            f"?paging.index={index}&paging.size={self.listing_page_size}"
-                        ),
-                        brand=brand,
-                        category=category,
-                    )
-                )
-
-        # Not every brand has a "-full-range" page. Clinique does; MAC,
-        # Estee Lauder, Bobbi Brown and Too Faced all 404 on it, and a
-        # seven-brand run returned 187 Clinique products and nothing at all
-        # for the other six. The bare brand hub does exist for those, so it is
-        # always included as well -- it costs one request, and the products it
-        # finds deduplicate against the range listing by product id.
-        if not categories:
-            pages.append(
-                ListingPage(
-                    url=f"https://{self.domain}/{slug}",
-                    brand=brand,
-                    category=None,
-                )
-            )
+        for category in categories:
+            leaf = self.CATEGORY_SLUGS.get(category.strip().lower(), self._brand_slug(category))
+            if not leaf.startswith(slug):
+                leaf = f"{slug}-{leaf}"
+            pages.append(ListingPage(url=f"https://{self.domain}/{slug}/{leaf}",
+                                     brand=brand, category=category))
         return pages
+
+    def more_listing_pages(self, response, meta: dict, added: int) -> List[str]:
+        """What to crawl after a Boots listing page.
+
+        A brand page (/tom-ford, one path segment): every product list it
+        links to. A list page (/tom-ford-/tom-ford-all-fragrances): its next
+        page, as long as this page added products. Past the last page Boots
+        returns an empty page, so that is where it stops.
+        """
+        requested = urlparse(meta.get("url") or str(response.url))
+        path = requested.path.strip("/")
+
+        if "/" not in path:
+            if meta.get("category"):
+                return []  # a category filter was asked for; do not widen it
+            # read the brand's folder after redirects: /tom-ford -> /tom-ford-
+            root = urlparse(str(response.url)).path.strip("/")
+            lists = [url for url in self._links(response)
+                     if url.startswith(f"https://{self.domain}/{root}/")
+                     and "?" not in url and not self.is_product_url(url)]
+            if not lists:
+                self._featured_only.add(meta.get("brand"))
+            return lists
+
+        page = int(parse_qs(requested.query).get("paging.index", ["0"])[0])
+        if added and page + 1 < self.MAX_LIST_PAGES:
+            return [f"https://{self.domain}/{path}?paging.index={page + 1}"
+                    f"&paging.size={self.listing_page_size}"]
+        return []
+
+    def crawl_warnings(self) -> List[str]:
+        return [f"{brand}: its Boots brand page links no product lists, so only "
+                f"the featured products on that page were collected"
+                for brand in sorted(self._featured_only)]
 
     def extract_product_links(self, response, brand: Optional[str] = None) -> List[str]:
         """Product URLs linked from a listing page, de-duplicated in page order.
@@ -236,16 +270,20 @@ class BootsAdapter(RetailerAdapter):
         one brand, and its product slugs do not reliably contain the brand
         name, so filtering on it would drop genuine products.
         """
+        return list(dict.fromkeys(
+            canonical_url(url) for url in self._links(response) if self.is_product_url(url)
+        ))
+
+    def _links(self, response) -> List[str]:
+        """Every boots.com link on a page, made absolute, once each, in page order."""
         found = []
         for node in response.css("a"):
-            href = node.attrib.get("href") or ""
+            href = (node.attrib.get("href") or "").split("#")[0]
             if href.startswith("/"):
                 href = f"https://{self.domain}{href}"
-            if self.is_product_url(href):
-                clean = canonical_url(href)
-                if clean not in found:
-                    found.append(clean)
-        return found
+            if urlparse(href).netloc.endswith("boots.com"):
+                found.append(href)
+        return list(dict.fromkeys(found))
 
     def product_id_from_url(self, url: str) -> Optional[str]:
         """Public form of the id helper, used to join sitemap-discovered

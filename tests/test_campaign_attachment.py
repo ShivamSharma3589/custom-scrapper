@@ -18,6 +18,8 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from retailscraper.adapters.base import get_adapter  # noqa: E402
 from retailscraper.models import (  # noqa: E402
     SCOPE_BRAND,
+    SCOPE_CATEGORY,
+    SCOPE_PRODUCT,
     SCOPE_SITEWIDE,
     Campaign,
     Product,
@@ -99,6 +101,48 @@ def run() -> int:
           own.applied_campaigns)
     check("and not to products that do not carry it",
           all(matching.campaign_id not in p.applied_campaigns for p in early))
+
+    print("\n=== a product showing two offers gets both ===")
+    # The page's offers used to be joined into one string and compared with
+    # each single offer, so a product with two offers matched neither. 15
+    # Boots products were left with none.
+    first = campaign("Save up to 20 percent on selected premium beauty", SCOPE_PRODUCT)
+    second = campaign("Receive a free gift when you spend 40", SCOPE_PRODUCT)
+    for item in (first, second):
+        spider.campaigns[item.campaign_id] = item
+    both = product("p-both", promo=f"{first.promotion_text} | {second.promotion_text}")
+    spider.products[both.product_id] = both
+    spider._page_offers[both.product_id] = [first.campaign_id, second.campaign_id]
+    spider.apply_campaigns()
+    check("both offers attach",
+          first.campaign_id in both.applied_campaigns
+          and second.campaign_id in both.applied_campaigns, both.applied_campaigns)
+    check("and neither reaches a product that did not show it",
+          all(first.campaign_id not in p.applied_campaigns for p in early))
+
+    print("\n=== a hub banner reaches the products in its offer ===")
+    # Boots' offers page says "Fragrance Save up to 20% ... SHOP NOW" and links
+    # to ?criteria.promotionalText=Save+up+to+20+percent+on+selected+fragrance.
+    # That is the exact line a product in the offer shows on its own page.
+    boots = RetailPromotionSpider(adapter=get_adapter("boots"), brands=["Tom Ford"])
+    own_line = campaign("Save up to 20 percent on selected fragrance", SCOPE_PRODUCT)
+    banner = Campaign(
+        retailer="Boots", promotion_text="Fragrance Save up to 20% on selected fragrance SHOP NOW",
+        promotion_type="percentage_discount", scope=SCOPE_CATEGORY, scope_value="fragrance",
+        source_url="https://www.boots.com/offers",
+        landing_url="https://www.boots.com/fragrance/shop-all-fragrance"
+                    "?criteria.promotionalText=Save+up+to+20+percent+on+selected+fragrance")
+    for item in (own_line, banner):
+        boots.campaigns[item.campaign_id] = item
+    in_offer, not_in_offer = product("tf-1"), product("tf-2")
+    for item in (in_offer, not_in_offer):
+        boots.products[item.product_id] = item
+    boots._page_offers[in_offer.product_id] = [own_line.campaign_id]
+    boots.apply_campaigns()
+    check("the banner attaches where the page showed that offer",
+          banner.campaign_id in in_offer.applied_campaigns, in_offer.applied_campaigns)
+    check("and not where it did not",
+          banner.campaign_id not in not_in_offer.applied_campaigns, not_in_offer.applied_campaigns)
 
     print("\n=== attachment is repeatable, not cumulative ===")
     # apply_campaigns() runs once per crawl today, but a second call must not

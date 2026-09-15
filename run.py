@@ -286,6 +286,13 @@ def main(argv=None) -> int:
         if with_campaigns:
             print(f"campaigns attached to {with_campaigns} product(s)")
 
+        # problems the adapter noticed mid-crawl, e.g. a brand page that
+        # links no product lists; recorded in the manifest like prepare()'s
+        for warning in adapter.crawl_warnings():
+            prepare_warnings.append(warning)
+            logging.getLogger(__name__).warning(warning)
+            print(f"warning: {warning}", file=sys.stderr)
+
         if args.resolve_categories:
             filled = spider.apply_category_index()
             print(f"\ncategory index: {len(spider.category_index)} product(s) mapped, "

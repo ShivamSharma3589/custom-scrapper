@@ -19,7 +19,7 @@ from typing import Any, AsyncGenerator, Callable, Dict, List, Optional, Sequence
 from scrapling.spiders import CrawlRule, LinkExtractor, Request, SitemapSpider
 
 from .adapters.base import RetailerAdapter
-from .models import Campaign, Product, RejectedRecord, SCOPE_SITEWIDE
+from .models import Campaign, Product, RejectedRecord, SCOPE_PRODUCT, SCOPE_SITEWIDE
 from .validation import match_brand, validate
 
 
@@ -117,6 +117,15 @@ class RetailPromotionSpider(SitemapSpider):
         self._dispatched = 0
         self._dispatched_by_brand: Dict[str, int] = {}
 
+        # product links already seen on each list, so paging stops at the
+        # first page that adds nothing new. Keyed by the list URL without
+        # its page number.
+        self._list_links: Dict[str, set] = {}
+
+        # product id -> ids of the offers its own page showed, so a product
+        # carrying two offers gets both, not neither
+        self._page_offers: Dict[str, List[str]] = {}
+
         super().__init__(crawldir=crawldir)
 
     # --- crawl entry points ----------------------------------------------
@@ -211,12 +220,21 @@ class RetailPromotionSpider(SitemapSpider):
         # Route 2: listing pages. The brand and category ride on the request
         # so products found there inherit both -- their URLs mention neither.
         for page in listing_pages:
-            yield Request(
-                page.url,
-                callback=self.parse_listing_page,
-                sid=self.adapter.listing_session_id or "",
-                meta={"brand": page.brand, "category": page.category},
-            )
+            yield self._listing_request(page.url, page.brand, page.category)
+
+    def _listing_request(self, url: str, brand, category) -> Request:
+        """A request for one listing page.
+
+        The requested URL rides along in meta because `response.url` can lose
+        it: Boots redirects /tom-ford to /tom-ford-, and drops ?paging.index
+        from the address it reports.
+        """
+        return Request(
+            url,
+            callback=self.parse_listing_page,
+            sid=self.adapter.listing_session_id or "",
+            meta={"brand": brand, "category": category, "url": url},
+        )
 
     async def parse_listing_page(self, response) -> AsyncGenerator[Any, None]:
         """Harvest product links from a listing page and queue them.
@@ -243,11 +261,22 @@ class RetailPromotionSpider(SitemapSpider):
                 self._accept_product(product, meta)
             return
 
-        for url in self.adapter.extract_product_links(response, meta.get("brand")):
+        links = self.adapter.extract_product_links(response, meta.get("brand"))
+        for url in links:
             request = Request(url, callback=self.parse_product_page,
                               meta=inherited or None)
             if self._enforce_product_cap(request, response) is not None:
                 yield request
+
+        # count what this page added to its list, then let the adapter decide
+        # what comes next: lists a brand page links to, or the next page
+        list_url = str(meta.get("url") or response.url).split("?")[0]
+        seen = self._list_links.setdefault(list_url, set())
+        added = len(set(links) - seen)
+        seen.update(links)
+
+        for url in self.adapter.more_listing_pages(response, meta, added):
+            yield self._listing_request(url, meta.get("brand"), meta.get("category"))
 
     def rules(self) -> List[CrawlRule]:
         """Dispatch sitemap URLs, keeping only plausible product pages.
@@ -457,8 +486,11 @@ class RetailPromotionSpider(SitemapSpider):
             f"campaign directory: {len(self.campaigns)} campaign(s) known "
             f"after {response.url}"
         )
-        return
-        yield  # pragma: no cover - keeps this an async generator
+
+        # other offers pages this one links to. The crawler skips any URL it
+        # has already fetched, so pages linking to each other do not loop.
+        for url in self.adapter.offer_page_links(response):
+            yield Request(url, callback=self.parse_campaign_directory)
 
     async def parse_campaign_page(self, response) -> AsyncGenerator[Any, None]:
         """Collect promotions from a brand or category landing page."""
@@ -471,14 +503,17 @@ class RetailPromotionSpider(SitemapSpider):
         """Extract, validate and store one product."""
         # Campaigns are collected from product pages too: the site-wide strip
         # banner is visible here, and the product's own offer only exists here.
+        page_offers = []
         for campaign in self.adapter.extract_campaigns(response):
             self._record_campaign(campaign)
+            if campaign.scope == SCOPE_PRODUCT:
+                page_offers.append(campaign.campaign_id)
 
         # Some pages sell several sizes at different prices behind one URL.
         # Where the adapter can read them, each size is its own record: the
         # alternative is a single "from" price that is not the price of any
         # specific item and cannot be compared with another retailer's.
-        meta = response.meta or {}
+        meta = {**(response.meta or {}), "page_offers": page_offers}
         variants = self.adapter.extract_product_variants(response, self.brands)
         if variants:
             self.logger.info(
@@ -536,6 +571,7 @@ class RetailPromotionSpider(SitemapSpider):
         existing = self.products.get(product.product_id)
         if existing is None:
             self.products[product.product_id] = product
+            self._page_offers[product.product_id] = list(meta.get("page_offers") or [])
             # Hand the record to whatever is saving as the run goes. A run
             # that dies otherwise leaves nothing at all: the John Lewis crawl
             # was stopped at 422 requests and wrote no file, losing about 35
@@ -582,15 +618,32 @@ class RetailPromotionSpider(SitemapSpider):
     def _campaigns_for(self, product: Product) -> List[str]:
         """Ids of the campaigns that apply to this product.
 
-        Only two things qualify: a campaign whose text matches the offer shown
-        on the product's own page, and site-wide campaigns, which by
-        definition apply everywhere. We never attach a brand or category
-        campaign to a product just because we saw it during the same run.
+        A campaign qualifies when:
+          * it is site-wide, so it applies everywhere
+          * the product's own page showed it
+          * its text matches the product's promotional copy exactly
+          * its link names the retailer's offer, and the product's own page
+            showed an offer with that same name
+
+        We never attach a brand or category campaign to a product just
+        because we saw it during the same run.
         """
+        shown = self._page_offers.get(product.product_id, [])
+        shown_text = {_plain(self.campaigns[cid].promotion_text)
+                      for cid in shown if cid in self.campaigns}
+
         applicable = []
         for campaign in self.campaigns.values():
-            if campaign.scope == SCOPE_SITEWIDE:
-                applicable.append(campaign.campaign_id)
-            elif product.promotional_copy and campaign.promotion_text == product.promotional_copy:
+            key = self.adapter.promotion_key(campaign)
+            if (campaign.scope == SCOPE_SITEWIDE
+                    or campaign.campaign_id in shown
+                    or (product.promotional_copy
+                        and campaign.promotion_text == product.promotional_copy)
+                    or (key and _plain(key) in shown_text)):
                 applicable.append(campaign.campaign_id)
         return applicable
+
+
+def _plain(text: str) -> str:
+    """Text compared loosely: case and spacing ignored."""
+    return " ".join(text.split()).casefold()

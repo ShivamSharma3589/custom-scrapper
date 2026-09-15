@@ -189,6 +189,32 @@ class RetailerAdapter(ABC):
         """
         return None
 
+    def more_listing_pages(self, response: "Response", meta: dict, added: int) -> List[str]:
+        """Listing pages to visit after this one: a list a brand page links
+        to, or the next page of this list.
+
+        `meta["url"]` is the URL that was requested, which can differ from
+        `response.url` after a redirect. `added` is how many products this
+        page showed that earlier pages of the same list had not, so paging
+        can stop at the first page that adds nothing.
+        """
+        return []
+
+    def offer_page_links(self, response: "Response") -> List[str]:
+        """Other offers pages linked from this one, so they are found on the
+        site rather than listed in the adapter."""
+        return []
+
+    def promotion_key(self, campaign: Campaign) -> Optional[str]:
+        """The retailer's own name for an offer, when the campaign's link
+        carries one. Used to tie a hub banner to the products showing that
+        offer on their own page."""
+        return None
+
+    def crawl_warnings(self) -> List[str]:
+        """Problems noticed during the crawl, for the run summary and manifest."""
+        return []
+
     def warmup_url(self) -> Optional[str]:
         """A throwaway page to fetch first, to establish the session.
 
