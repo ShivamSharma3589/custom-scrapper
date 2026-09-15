@@ -144,6 +144,50 @@ def run() -> int:
     check("and not where it did not",
           banner.campaign_id not in not_in_offer.applied_campaigns, not_in_offer.applied_campaigns)
 
+    print("\n=== a brand's file lists only its own campaigns ===")
+    # At Boots 60 of 76 campaigns touched none of the requested brands, and
+    # every brand file repeated all 76.
+    import json as _json
+    import tempfile
+    from retailscraper.output import build_payload, write_all
+    from retailscraper.runs import RunPaths
+
+    class _Shop:
+        display_name, name = "Boots", "boots"
+
+    ours = product("c-1")
+    ours.brand_matched_to = "Clinique"
+    ours.applied_campaigns = [late.campaign_id]
+    payload = build_payload("Boots", "www.boots.com", ["Clinique"], [ours],
+                            [late, brand_wide], [], {}, run_id="r1")
+    with tempfile.TemporaryDirectory() as tmp:
+        paths = RunPaths(Path(tmp), _Shop())
+        write_all(payload, paths)
+        brand_file = _json.loads(paths.file("clinique", ".json").read_text(encoding="utf-8"))
+        all_file = _json.loads(paths.file("campaigns", ".json").read_text(encoding="utf-8"))
+    check("the brand file has the campaign on its product",
+          [c["campaign_id"] for c in brand_file["campaigns"]] == [late.campaign_id],
+          [c["promotion_text"] for c in brand_file["campaigns"]])
+    check("the campaigns file still has every campaign", len(all_file["campaigns"]) == 2,
+          len(all_file["campaigns"]))
+
+    print("\n=== brands_campaigns holds the campaigns on any requested brand ===")
+    theirs = product("m-1")
+    theirs.brand, theirs.brand_matched_to = "MAC", "MAC"
+    theirs.applied_campaigns = [late.campaign_id]
+    payload = build_payload("Boots", "www.boots.com", ["Clinique", "MAC"], [ours, theirs],
+                            [late, brand_wide], [], {}, run_id="r2")
+    with tempfile.TemporaryDirectory() as tmp:
+        paths = RunPaths(Path(tmp), _Shop())
+        write_all(payload, paths)
+        both = _json.loads(paths.file("brands_campaigns", ".json").read_text(encoding="utf-8"))["campaigns"]
+        csv_text = paths.file("brands_campaigns", ".csv").read_text(encoding="utf-8-sig")
+    check("only the campaign that reached a brand", [c["campaign_id"] for c in both] == [late.campaign_id],
+          [c["promotion_text"] for c in both])
+    check("naming every brand it reached", both and both[0]["brands"] == ["Clinique", "MAC"],
+          both and both[0].get("brands"))
+    check("the CSV has a brands column", "brands" in csv_text.splitlines()[0] and "Clinique;MAC" in csv_text)
+
     print("\n=== attachment is repeatable, not cumulative ===")
     # apply_campaigns() runs once per crawl today, but a second call must not
     # double up -- a list that grows on every pass would corrupt the CSV.

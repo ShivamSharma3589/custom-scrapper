@@ -282,6 +282,7 @@ output/john_lewis/
     clinique/2026-09-07_14-30-00.csv
     mac/2026-09-07_14-30-00.json
     campaigns/2026-09-07_14-30-00.json    every offer the shop is running
+    brands_campaigns/2026-09-07_14-30-00.json  only offers on your brands, each naming them
     rejected/2026-09-07_14-30-00.csv      what was refused, and why
     logs/2026-09-07_14-30-00.log          every request, warning and error
     manifest/2026-09-07_14-30-00.json     what happened, and whether to trust it

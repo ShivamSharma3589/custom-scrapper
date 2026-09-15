@@ -96,17 +96,72 @@ def run() -> int:
     # Every other adapter picks up campaigns for free, because the listings it
     # crawls are HTML and the promotional copy sits on them. AllBeauty's
     # listings are products.json -- pure data, no copy anywhere -- so a brand
-    # run reported ZERO campaigns for a site running ten. The offer hubs have
-    # to be seeded explicitly.
+    # run reported ZERO campaigns for a site running ten. The crawler reads
+    # the offers page on every run.
+    #
+    # It has to be /pages/offers: /collections/offers and /collections/sale
+    # gave one campaign each, the offers page 18.
     hubs = set(adapter.campaign_discovery_urls())
     seeds = set(adapter.campaign_seed_urls(["Clinique"]))
-    check("offer hubs are declared", len(hubs) >= 2, sorted(hubs))
-    check("a brand run seeds those hubs", seeds == hubs, sorted(seeds))
+    check("the offers page is where discovery starts",
+          hubs == {"https://allbeauty.com/pages/offers"}, sorted(hubs))
+    check("and it is not a seed, so its offers are followed", seeds == set(), sorted(seeds))
 
     # And they must not collide with the JSON listing URLs, or the crawler
     # would fetch one of them with the wrong callback.
     listings = {p.url for p in adapter.product_listing_urls("Clinique", [], max_pages=2)}
-    check("hubs do not collide with listings", not (seeds & listings))
+    check("hubs do not collide with listings", not (hubs & listings))
+
+    print("\n=== offers on the offers page, and their products ===")
+    from scrapling.parser import Selector  # noqa: E402
+
+    # links as they appear on allbeauty.com/pages/offers, 15 Sep 2026
+    offers_page = Selector(url="https://allbeauty.com/pages/offers", content="""<html><body>
+        <a href="/collections/clinique">Clinique Up to 35% off SHOP NOW</a>
+        <a href="/collections/xerjoff">Xerjoff I Up To 50% Off —SHOP NOW</a>
+        <a href="/collections/offers-value-duos">Value Duos</a>
+        <a href="/collections/offers-outlet">Outlet</a>
+        <a href="/collections/offers-save-30">At Least 30% off</a>
+        <a href="/collections/new-in-gifts">Gift Sets</a>
+        <a href="/pages/makeup">Makeup Up to 50% off SHOP NOW</a>
+        <a href="/products/clinique-moisture-surge-50ml">Clinique Moisture Surge 20% off</a>
+    </body></html>""")
+    campaigns = {c.promotion_text: c for c in adapter.extract_campaign_directory(offers_page)}
+    check("a worded offer, without its button", "Clinique Up to 35% off" in campaigns, sorted(campaigns))
+    check("a trailing dash goes with the button", "Xerjoff I Up To 50% Off" in campaigns, sorted(campaigns))
+    check("an offer collection named without a figure", {"Value Duos", "Outlet"} <= set(campaigns),
+          sorted(campaigns))
+    check("'Outlet' is a sale", campaigns.get("Outlet") and campaigns["Outlet"].promotion_type == "sale")
+    check("a saving-size filter is not an offer", "At Least 30% off" not in campaigns)
+    check("a product tile is not an offer", not any("Moisture Surge" in t for t in campaigns))
+
+    links = adapter.offer_page_links(offers_page)
+    check("each offer collection's product list is read", {
+        "https://allbeauty.com/collections/clinique/products.json?limit=250&page=1&offer=1",
+        "https://allbeauty.com/collections/offers-value-duos/products.json?limit=250&page=1&offer=1",
+        "https://allbeauty.com/collections/offers-outlet/products.json?limit=250&page=1&offer=1",
+    } <= set(links), links)
+    check("and each linked offers page", "https://allbeauty.com/pages/makeup" in links, links)
+    check("not the saving-size filter, nor an ordinary collection",
+          not any("offers-save-30" in u or "new-in-gifts" in u for u in links), links)
+    check("the product list is not mistaken for the brand listing", not (set(links) & listings))
+
+    class JsonPage:
+        def __init__(self, url, count):
+            self.url = url
+            self.body = ('{"products": [%s]}' % ",".join('{"id": %d}' % (1000 + i) for i in range(count))).encode()
+
+        def css(self, query):
+            return []
+
+    full = JsonPage("https://allbeauty.com/collections/offers-outlet/products.json?limit=250&page=1&offer=1", 250)
+    check("a full page leads to the next",
+          adapter.offer_page_links(full) == [full.url.replace("page=1", "page=2")], adapter.offer_page_links(full))
+    last = JsonPage("https://allbeauty.com/collections/offers-outlet/products.json?limit=250&page=2&offer=1", 12)
+    check("a part-full page is the last", adapter.offer_page_links(last) == [])
+    check("its products are the offer's members", adapter.offer_page_products(last)[:2] == ["1000", "1001"])
+    check("filed under the collection, which is where its offer links",
+          adapter.offer_page_of(last.url) == "https://allbeauty.com/collections/offers-outlet")
 
     # A JSON listing carries no promotional copy and must claim none.
     class JsonListing:

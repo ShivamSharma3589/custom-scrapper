@@ -558,6 +558,150 @@ def coverage_checks() -> int:
     check("on a size whose page the offer lists", save15.campaign_id in sized.applied_campaigns)
     check("not on a product it does not list", save15.campaign_id not in other.applied_campaigns)
 
+    failures += blocking_checks()
+    return failures
+
+
+def blocking_checks() -> int:
+    """Staying under John Lewis's block, and moving on when it comes anyway.
+
+    Akamai refused every request from the 153rd page load of a run, and a
+    seven-brand run needed about 1,300. Listings carry exact data for most
+    products, and a backup proxy takes over when an IP is refused.
+    """
+    import asyncio
+    import json
+    from types import SimpleNamespace
+
+    from retailscraper.adapters.johnlewis import JohnLewisAdapter
+    from retailscraper.spider import RetailPromotionSpider
+
+    failures = 0
+
+    def check(label, ok, detail=""):
+        nonlocal failures
+        failures += 0 if ok else 1
+        print(f"  {'ok  ' if ok else 'FAIL'} {label}" + (f"  {detail}" if not ok else ""))
+
+    # three real tiles from the Too Faced listing, 15 Sep 2026
+    tiles = json.loads((FIXTURES / "johnlewis_listing_tiles.json").read_text(encoding="utf-8"))
+    state = {"props": {"pageProps": {"productListingData": {"results": 3, "pagesAvailable": 1, "products": tiles}}}}
+    links = "".join(f'<a href="{t["url"]}">{t["title"]}</a>' for t in tiles)
+    listing = Selector(url="https://www.johnlewis.com/brand/too-faced/_/N-1yzudgd", content=(
+        f'<html><body><script id="__NEXT_DATA__" type="application/json">{json.dumps(state)}</script>'
+        f'{links}</body></html>'))
+
+    adapter = JohnLewisAdapter()
+    print("\n=== products with one price are read from the listing ===")
+    products = {p.product_id: p for p in adapter.extract_products_from_listing(listing, "Too Faced")}
+    check("the two one-price products, not the one priced by size",
+          sorted(products) == ["113626808", "114981999"], sorted(products))
+    foundation = products.get("113626808")
+    if foundation:
+        # the same product's own page said 34.20, was 38.00, 10% and 30 shades
+        check("price, was-price and saving match its product page",
+              (foundation.current_price, foundation.original_price, foundation.discount_percent)
+              == (34.2, 38.0, 10.0),
+              (foundation.current_price, foundation.original_price, foundation.discount_percent))
+        check("its promotion", foundation.promotional_copy == "Price matched: save 10% on selected products",
+              foundation.promotional_copy)
+        check("its shades", foundation.variant_count == 30, foundation.variant_count)
+        check("passes validation", validate(foundation, ["Too Faced"]) is None, validate(foundation, ["Too Faced"]))
+    bronzer = products.get("114981999")
+    check("an unreduced product has no was-price", bronzer is not None and bronzer.original_price is None)
+
+    pages = adapter.product_pages_to_read(listing, "Too Faced")
+    check("only the product priced by size needs its page",
+          [adapter.product_id_from_url(u) for u in pages] == ["5926197"], pages)
+
+    print("\n=== the listing's offers reach the products that show them ===")
+    spider = RetailPromotionSpider(adapter=adapter, brands=["Too Faced"])
+
+    async def crawl_listing():
+        return [r async for r in spider.parse_listing_page(SimpleNamespace(
+            url=listing.url, meta={"brand": "Too Faced", "url": listing.url},
+            css=listing.css, html_content=listing.html_content, body=listing.html_content.encode()))]
+
+    queued = asyncio.run(crawl_listing())
+    spider.apply_campaigns()
+    offer = next((c for c in spider.campaigns.values()
+                  if c.promotion_text == "Price matched: save 10% on selected products"), None)
+    check("one product page queued, not three", len(queued) == 1, [getattr(r, "url", r) for r in queued])
+    check("the offer is on the foundation",
+          offer is not None and offer.campaign_id in spider.products["113626808"].applied_campaigns)
+    check("and not on the bronzer, which shows none",
+          offer is not None and offer.campaign_id not in spider.products["114981999"].applied_campaigns)
+
+    print("\n=== a refused IP hands over to the backup proxy ===")
+    # stand-in proxies, so the test never depends on what is in .env
+    import retailscraper.adapters.johnlewis as jl_adapter
+    real_proxies = jl_adapter.PROXY_URLS
+    jl_adapter.PROXY_URLS = ["http://u:p@31.59.20.176:6754", "http://u:p@45.38.107.97:6014"]
+    try:
+        spider = RetailPromotionSpider(adapter=JohnLewisAdapter(), brands=["Clinique"])
+    finally:
+        jl_adapter.PROXY_URLS = real_proxies
+    manager = spider._session_manager
+    check("a browser per proxy, not started until needed",
+          manager.session_ids == ["default", "proxy1", "proxy2"], manager.session_ids)
+
+    # stand-in browsers: this checks the switching, not a real launch
+    class FakeBrowser:
+        def __init__(self, name):
+            self.name, self._is_alive, self.closed = name, False, False
+
+        async def __aenter__(self):
+            self._is_alive = True
+            return self
+
+        async def close(self):
+            self.closed = True
+
+    browsers = {sid: FakeBrowser(sid) for sid in manager.session_ids}
+    for sid in list(manager.session_ids):
+        manager.pop(sid)
+    for sid, browser in browsers.items():
+        manager.add(sid, browser, lazy=sid != "default")
+
+    refused = SimpleNamespace(status=403, url="https://www.johnlewis.com/clinique-x/p1")
+    loaded = SimpleNamespace(status=200, url="https://www.johnlewis.com/clinique-y/p2")
+    # the crawler stamps the default session's id on every request it queues
+    request = SimpleNamespace(sid="default", url=refused.url)
+
+    async def refuse(times):
+        for _ in range(times):
+            await spider.is_blocked(refused)
+            await spider.retry_blocked_request(request, refused)
+
+    def serving():
+        return manager.get(manager.default_session_id).name
+
+    asyncio.run(refuse(2))
+    check("two refusals do not switch", serving() == "default", serving())
+    asyncio.run(spider.is_blocked(loaded))
+    asyncio.run(refuse(2))
+    check("a page loading in between resets the count", serving() == "default", serving())
+    asyncio.run(refuse(1))
+    check("three in a row move to the first proxy", serving() == "proxy1", serving())
+    check("under the same session id, so queued requests still find a browser",
+          manager.default_session_id == "default" and "default" in manager.session_ids,
+          manager.session_ids)
+    check("the proxy browser was started", browsers["proxy1"]._is_alive)
+    check("and the refused one closed", browsers["default"].closed)
+    asyncio.run(refuse(3))
+    check("then to the next", serving() == "proxy2", serving())
+    asyncio.run(refuse(3))
+    check("and stays on the last one rather than running out", serving() == "proxy2", serving())
+    check("switches are recorded", spider.switched_sessions == ["default", "proxy1"], spider.switched_sessions)
+
+    jl_adapter.PROXY_URLS = []
+    try:
+        plain = RetailPromotionSpider(adapter=JohnLewisAdapter(), brands=["Clinique"])
+    finally:
+        jl_adapter.PROXY_URLS = real_proxies
+    check("without proxies nothing is added", plain._session_manager.session_ids == ["default"],
+          plain._session_manager.session_ids)
+
     return failures
 
 

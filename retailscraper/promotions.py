@@ -9,11 +9,14 @@ import re
 from typing import Optional
 
 from .models import (
+    PROMO_AMOUNT,
     PROMO_BUNDLE,
     PROMO_CODE,
     PROMO_GIFT,
     PROMO_OTHER,
     PROMO_PERCENTAGE,
+    PROMO_PRICE_MATCH,
+    PROMO_SALE,
     PROMO_SPEND_THRESHOLD,
 )
 
@@ -44,6 +47,15 @@ _FREE_SHIPPING_RE = re.compile(
 _PERCENT_RE = re.compile(_PERCENT, re.IGNORECASE)
 _FRACTION_OFF_RE = re.compile(r"\bhalf price\b|\b\d\s*/\s*\d\s*(?:price|off)\b", re.IGNORECASE)
 _CODE_RE = re.compile(r"\bcode\b", re.IGNORECASE)
+# A money saving or a price point: "Save £10", "£10 Off", "Only £49.50, Worth £151"
+_AMOUNT_RE = re.compile(
+    r"\bsave\s+(?:up\s+to\s+)?[£$€]\s?\d|[£$€]\s?\d+(?:\.\d+)?\s*off\b"
+    r"|\b(?:only|worth|for)\s+[£$€]\s?\d",
+    re.IGNORECASE,
+)
+_PRICE_MATCH_RE = re.compile(r"\bprice\s+match", re.IGNORECASE)
+# A reduction with no figure given: "MAC Cosmetics Sale", "Reduced To Clear"
+_SALE_RE = re.compile(r"\bsale\b|\breduced\b|\bclearance\b|\boutlet\b", re.IGNORECASE)
 
 
 # A caller-supplied vocabulary REPLACES the built-in rules rather than
@@ -207,7 +219,11 @@ def classify_promotion(text: str) -> str:
         return PROMO_GIFT
     if re.search(r"\bfree\b", text, re.IGNORECASE) and not _FREE_SHIPPING_RE.search(text):
         return PROMO_GIFT
-    if _CODE_RE.search(text) and _PERCENT_RE.search(text):
+    # before the saving it states: the retailer matching a rival's price is
+    # the fact a brand team needs, "save 15%" is only how much
+    if _PRICE_MATCH_RE.search(text):
+        return PROMO_PRICE_MATCH
+    if _CODE_RE.search(text) and (_PERCENT_RE.search(text) or _AMOUNT_RE.search(text)):
         return PROMO_CODE
     if _PERCENT_RE.search(text):
         return PROMO_PERCENTAGE
@@ -215,4 +231,8 @@ def classify_promotion(text: str) -> str:
     # discounts written without a number.
     if _FRACTION_OFF_RE.search(text):
         return PROMO_PERCENTAGE
+    if _AMOUNT_RE.search(text):
+        return PROMO_AMOUNT
+    if _SALE_RE.search(text):
+        return PROMO_SALE
     return PROMO_OTHER

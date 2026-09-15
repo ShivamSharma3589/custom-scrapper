@@ -186,7 +186,6 @@ class BootsAdapter(RetailerAdapter):
                 network_idle=True,
                 timeout=120_000,
                 max_pages=2,
-                # proxy="http://dmrlxjhc:2unx9qvddqjo@31.59.20.176:6754/",
             ),
         )
 

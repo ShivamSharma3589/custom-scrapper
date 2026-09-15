@@ -100,6 +100,45 @@ def run() -> int:
     check("spend threshold",
           classify_promotion("Save £10 when you spend £20 on selected No7"),
           "spend_threshold")
+    # these were all "other" in a real audit
+    check("money saving", classify_promotion("Save £10 on selected Clinique"), "amount_discount")
+    check("money off", classify_promotion("£10 Off"), "amount_discount")
+    check("price point", classify_promotion("Only £49.50, Worth £151 on the Gift Set"), "amount_discount")
+    check("code with a money saving",
+          classify_promotion("Photobook Save £10 on photobooks with code CPB50"), "code_discount")
+    check("price match, with or without a figure",
+          (classify_promotion("Price matched"), classify_promotion("Price matched: save 15%")),
+          ("price_match", "price_match"))
+    check("a sale page's name", classify_promotion("MAC Cosmetics Sale"), "sale")
+    check("reduced to clear", classify_promotion("Reduced To Clear"), "sale")
+
+    print("\n=== button text is not part of the offer ===")
+    from retailscraper.models import Campaign
+    from retailscraper.normalize import strip_call_to_action
+    check("SHOP NOW and the badge after it",
+          strip_call_to_action("Fragrance Save up to 20% on selected fragrance SHOP NOW SAVE UP TO 20%"),
+          "Fragrance Save up to 20% on selected fragrance")
+    check("the reported example",
+          strip_call_to_action("Save up to 20% on selected fragrance. In-store & online. Hurry, ends soon! SHOP NOW"),
+          "Save up to 20% on selected fragrance. In-store & online. Hurry, ends soon!")
+    check("tab labels before SHOP ALL",
+          strip_call_to_action("Save up to 20% on selected fragrance. Hurry! PERFUME AFTERSHAVE SHOP ALL"),
+          "Save up to 20% on selected fragrance. Hurry!")
+    check("a promo code before SHOP NOW is kept",
+          strip_call_to_action("Save 15% on wall art with code WALLART SHOP NOW"),
+          "Save 15% on wall art with code WALLART")
+    check("ordinary copy is untouched",
+          strip_call_to_action("Shop now and save 20% on Clinique"), "Shop now and save 20% on Clinique")
+    check("an all-capitals offer is untouched",
+          strip_call_to_action("UP TO 20% OFF SELECTED BEAUTY | USE CODE: SAVE"),
+          "UP TO 20% OFF SELECTED BEAUTY | USE CODE: SAVE")
+    with_button = Campaign(retailer="Boots", promotion_text="Colgate 1/2 price SHOP NOW 1/2 PRICE",
+                           promotion_type="percentage_discount", scope="unresolved", source_url="x")
+    without = Campaign(retailer="Boots", promotion_text="Colgate 1/2 price",
+                       promotion_type="percentage_discount", scope="unresolved", source_url="x")
+    check("a campaign is stored without it, under one id",
+          (with_button.promotion_text, with_button.campaign_id == without.campaign_id),
+          ("Colgate 1/2 price", True))
 
     print("\n=== Lookfantastic reads scope from the link ===")
     lf = get_adapter("lookfantastic")

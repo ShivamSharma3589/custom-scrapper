@@ -288,7 +288,9 @@ def main(argv=None) -> int:
 
         # problems the adapter noticed mid-crawl, e.g. a brand page that
         # links no product lists; recorded in the manifest like prepare()'s
-        for warning in adapter.crawl_warnings():
+        switched = [f"{sid!r} was refused repeatedly, so the crawl moved to the next backup session"
+                    for sid in spider.switched_sessions]
+        for warning in adapter.crawl_warnings() + switched:
             prepare_warnings.append(warning)
             logging.getLogger(__name__).warning(warning)
             print(f"warning: {warning}", file=sys.stderr)
@@ -433,6 +435,7 @@ def main(argv=None) -> int:
             rejected=run_stats["rejected_records"],
             brands_requested=args.brands,
             brands_empty=empty,
+            expected_products=expected_products,
             reason=reason,
             warnings=prepare_warnings,
             files=[str(Path(p).relative_to(paths.root)) for p in written],

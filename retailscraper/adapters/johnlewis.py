@@ -66,6 +66,7 @@ from ..promotions import (
     is_confident_offer,
 )
 from .base import ListingPage, RetailerAdapter, register
+from config import PROXY_URLS
 
 # Product URLs end in /p<id>, optionally after a colour segment:
 #   /clinique-redness-solutions-daily-relief-cream-50ml/p47865
@@ -209,23 +210,38 @@ class JohnLewisAdapter(RetailerAdapter):
     # --- fetching ---------------------------------------------------------
 
     def configure_session(self, manager) -> None:
-        """A stealth browser for everything.
+        """A stealth browser for everything, plus a spare per backup proxy.
 
         Plain HTTP does not merely fail here, it hangs, so there is no cheap
         route to fall back on for product pages the way Lookfantastic has.
+
+        John Lewis's Akamai bot manager refuses every request from an IP after
+        about 150 page loads. Each proxy in `PROXY_URLS` from config.py, set in .env,
+        gets its own browser, and the crawl moves to the next one when the
+        current one is refused.
+
+        Each keeps its own cookies. Rotating a proxy on every request would
+        open a fresh browser per page, which Akamai sees as a new visitor
+        every time.
         """
         from scrapling.fetchers import AsyncStealthySession
 
-        manager.add(
-            "default",
-            AsyncStealthySession(
+        def browser(proxy: Optional[str] = None) -> AsyncStealthySession:
+            return AsyncStealthySession(
                 headless=True,
                 google_search=True,
                 network_idle=True,
                 timeout=120_000,
                 max_pages=2,
-            ),
-        )
+                proxy=proxy,
+            )
+
+        manager.add("default", browser())
+        self.backup_session_ids = []
+        for number, proxy in enumerate(PROXY_URLS, 1):
+            sid = f"proxy{number}"
+            manager.add(sid, browser(proxy), lazy=True)
+            self.backup_session_ids.append(sid)
 
     # --- brand code resolution -------------------------------------------
 
@@ -510,6 +526,81 @@ class JohnLewisAdapter(RetailerAdapter):
         campaign callback won, no products were queued at all.
         """
         return []
+
+    def _listing_tiles(self, response) -> List[Dict[str, Any]]:
+        """The product tiles in a brand listing's page state."""
+        page = self._page_state(response).get("props", {}).get("pageProps", {})
+        listing = page.get("productListingData") if isinstance(page, dict) else None
+        tiles = listing.get("products") if isinstance(listing, dict) else None
+        return [t for t in tiles or [] if isinstance(t, dict) and t.get("productId")]
+
+    @staticmethod
+    def _one_price(tile: Dict[str, Any]) -> bool:
+        """True when every size and shade of the tile sells at one price, and
+        was reduced from one price, so the tile states the exact figures."""
+        prices = tile.get("variantPriceRange") or {}
+        now = prices.get("value") or {}
+        history = [h for h in prices.get("reductionHistory") or [] if isinstance(h, dict)]
+        was = (history[0].get("display") or {}) if history else {}
+        return bool(now.get("min")) and now.get("min") == now.get("max") and was.get("min") == was.get("max")
+
+    def extract_products_from_listing(self, response, brand: Optional[str] = None) -> List[Product]:
+        """Products read straight from a brand listing, where its data is exact.
+
+        Each page of a listing carries 72 tiles with id, title, brand, link,
+        stock, price, was-price and promotions. For a product with one price
+        these match its product page exactly: Too Faced Born This Way
+        Foundation reads 34.20, was 38.00, "Price matched: save 10% on selected
+        products" and 30 shades both ways. A product priced by size is left
+        to `product_pages_to_read`, because a tile only states its range.
+
+        On 15 Sep 2026 1,008 of 1,237 products across seven brands had one
+        price. Reading them here instead of page by page is what keeps a run
+        under the ~150 page loads after which John Lewis starts refusing.
+        """
+        products = []
+        now_utc = datetime.now(timezone.utc).isoformat()
+        for tile in self._listing_tiles(response):
+            if not self._one_price(tile):
+                continue
+            prices = tile["variantPriceRange"]
+            current = self._decimal(prices["value"]["min"])
+            history = [h for h in prices.get("reductionHistory") or [] if isinstance(h, dict)]
+            original, currency = parse_price((history[0].get("display") or {}).get("min")) if history else (None, None)
+            if original is not None and current is not None and original <= current:
+                original = None
+            url = canonical_url(f"https://{self.domain}{tile.get('url') or ''}")
+            available = tile.get("isAvailableToOrder")
+            products.append(Product(
+                retailer=self.display_name,
+                brand=clean_text(tile.get("brand")) or "",
+                # John Lewis's own brand field in its listing data
+                brand_verified_by="listing_data",
+                product_id=str(tile["productId"]),
+                product_title=clean_text(tile.get("title")) or "",
+                product_url=url,
+                source_url=canonical_url(str(response.url)),
+                sku=clean_text(tile.get("defaultSkuId")),
+                current_price=current,
+                original_price=original,
+                discount_amount=round(original - current, 2) if original is not None else None,
+                discount_percent=percent_off(original, current),
+                currency=currency or "GBP",
+                availability="InStock" if available else "OutOfStock" if available is not None else None,
+                variant_count=len(tile.get("colorSwatches") or []) or 1,
+                price_is_from=False,
+                sku_matches_product_id=False,
+                promotional_copy=" | ".join(self._promotional_titles(tile.get("messaging"))) or None,
+                scraped_at=now_utc,
+            ))
+        return products
+
+    def product_pages_to_read(self, response, brand: Optional[str] = None) -> List[str]:
+        """Product pages for the tiles a listing cannot state exactly: those
+        priced by size, or with shades at different prices."""
+        wanted = {str(t["productId"]) for t in self._listing_tiles(response) if not self._one_price(t)}
+        return [url for url in self.extract_product_links(response)
+                if self.product_id_from_url(url) in wanted]
 
     def extract_product_links(self, response, brand: Optional[str] = None) -> List[str]:
         """Product URLs from a rendered brand listing page."""
@@ -1026,12 +1117,14 @@ class JohnLewisAdapter(RetailerAdapter):
         # 24 Clinique products carrying that badge recorded no campaign at all
         # while Tom Ford's quantified "Price matched: save 15%" came through.
         #
-        # Off a product page these are UNRESOLVED, never site-wide. They are
-        # read from each tile's own `messaging` on a brand listing, so they
+        # These are product scope wherever they are read, never site-wide. On
+        # a listing they come from each tile's own `messaging`, so they
         # describe individual products -- "Price matched: save £58" is one
         # item's saving. Calling that site-wide attaches it to every product
         # in the run, which is how all 770 John Lewis records came to carry
-        # seventeen promotions that belonged to a handful of them.
+        # seventeen promotions that belonged to a handful of them. Product
+        # scope also gives a tile's offer the same id as the same offer read
+        # from a product page, instead of a second copy.
         for text in self._stated_promotions(response):
             if text in seen:
                 continue
@@ -1041,7 +1134,7 @@ class JohnLewisAdapter(RetailerAdapter):
                     retailer=self.display_name,
                     promotion_text=text,
                     promotion_type=classify_promotion(text),
-                    scope=SCOPE_PRODUCT if on_product else SCOPE_UNRESOLVED,
+                    scope=SCOPE_PRODUCT,
                     scope_value=None,
                     promo_code=extract_promo_code(text),
                     source_url=canonical_url(url),

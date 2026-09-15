@@ -1,0 +1,234 @@
+[
+  {
+    "productId": "113626808",
+    "title": "Too Faced Born This Way Undetectable Medium-To-Full Coverage Foundation",
+    "brand": "Too Faced",
+    "url": "/too-faced-born-this-way-undetectable-medium-to-full-coverage-foundation/p113626808",
+    "multiSku": true,
+    "defaultSkuId": "113626694",
+    "isAvailableToOrder": true,
+    "outOfStock": false,
+    "variantPriceRange": {
+      "display": {
+        "max": "£34.20",
+        "min": "£34.20"
+      },
+      "reductionHistory": [
+        {
+          "display": {
+            "max": "£38.00",
+            "min": "£38.00"
+          },
+          "chronology": 0
+        }
+      ],
+      "value": {
+        "max": "34.20",
+        "min": "34.20"
+      },
+      "for": "ITEM"
+    },
+    "messaging": [
+      {
+        "title": "Price matched: save 10% on selected products",
+        "type": "promotional",
+        "promotionGroup": "Save",
+        "promotionType": "Price match price established"
+      }
+    ],
+    "colorSwatches": [
+      {
+        "id": "2cf31273-0ee5-54c8-a90c-eb2b281918b9"
+      },
+      {
+        "id": "52c6c9b5-485d-5353-b128-768fa25eb5b4"
+      },
+      {
+        "id": "d3bf78db-9d90-5be4-afd2-9acb7af5c52c"
+      },
+      {
+        "id": "2fcba704-d441-51bf-9f3c-350fbf5bdd35"
+      },
+      {
+        "id": "e4697f75-31a3-5007-b026-0dfd761df8fb"
+      },
+      {
+        "id": "a14b4ea4-3ef1-55d2-a175-7676b6c58bde"
+      },
+      {
+        "id": "d89d546f-e523-5d75-8ba0-5df1a81b7fdd"
+      },
+      {
+        "id": "535bba7c-0c83-5ef6-8592-ac248b7bf0d3"
+      },
+      {
+        "id": "df6ce83d-a6b3-5d8d-97fb-80ed1a08ea60"
+      },
+      {
+        "id": "5c3f5c3c-ff4d-518b-adca-68d7f7885fe5"
+      },
+      {
+        "id": "826ff032-bee2-5de4-abf5-3cc69b36b0c3"
+      },
+      {
+        "id": "5c355604-46db-5f0e-ac1f-4559eaeebfe7"
+      },
+      {
+        "id": "1f1aab51-2be3-59aa-9f92-3cd32f75620a"
+      },
+      {
+        "id": "158d2eeb-536c-5ba8-945d-1c4913a3e8f1"
+      },
+      {
+        "id": "8342c3fd-811b-5bfe-a0ee-2384e9e0bc74"
+      },
+      {
+        "id": "0636cd86-ad23-59f4-a490-25a5aa284bc3"
+      },
+      {
+        "id": "49d31f41-ad22-5be0-93df-b5925f1a9c5a"
+      },
+      {
+        "id": "6c04f11f-13df-53d2-99d3-d650a569f2cd"
+      },
+      {
+        "id": "a6ce12bd-18d8-58b9-8fdb-4f454144d9f2"
+      },
+      {
+        "id": "df608b9e-1297-5c4f-95ed-8e1c830c25fd"
+      },
+      {
+        "id": "3f8bbddb-57db-5176-8bf1-29062dcb520d"
+      },
+      {
+        "id": "deccfe6c-169b-5b33-a525-6df216f4e061"
+      },
+      {
+        "id": "822f4c8d-33a3-5f25-a3cb-f817ac652a46"
+      },
+      {
+        "id": "71a7f83d-4e97-5504-920c-72e4cfa686bf"
+      },
+      {
+        "id": "1c979173-f21b-52c0-9626-e8b84a733134"
+      },
+      {
+        "id": "ec8f4237-152b-585a-9a3c-d62902e7b49f"
+      },
+      {
+        "id": "dfea6630-3c4d-5905-81c4-9767c8103001"
+      },
+      {
+        "id": "5a849b21-94e5-5c24-b2cc-c31b21ac155a"
+      },
+      {
+        "id": "42d6e05e-e149-5c33-a660-156d4cfcdf95"
+      },
+      {
+        "id": "6c0f0d80-51c9-55db-b3fd-2e351e10242f"
+      }
+    ]
+  },
+  {
+    "productId": "5926197",
+    "title": "Too Faced Lip Injection Maximum Plump",
+    "brand": "Too Faced",
+    "url": "/too-faced-lip-injection-maximum-plump/p5926197",
+    "multiSku": true,
+    "defaultSkuId": "240667387",
+    "isAvailableToOrder": true,
+    "outOfStock": false,
+    "variantPriceRange": {
+      "display": {
+        "max": "£26.00",
+        "min": "£23.40"
+      },
+      "reductionHistory": [],
+      "value": {
+        "max": "26.00",
+        "min": "23.40"
+      },
+      "for": "ITEM"
+    },
+    "messaging": [
+      {
+        "title": "Price matched: save 10% on selected products",
+        "type": "promotional",
+        "promotionGroup": "Save",
+        "promotionType": "Price match price established"
+      }
+    ],
+    "colorSwatches": [
+      {
+        "id": "233b3f93-a8da-5216-93f0-f96b716930c1"
+      },
+      {
+        "id": "ea197877-b892-550a-b950-53c0ac679320"
+      },
+      {
+        "id": "ddd233f8-a64d-52c0-838c-6ea125e368c4"
+      },
+      {
+        "id": "2587506c-bda1-5f7e-b231-7fae9638ec07"
+      },
+      {
+        "id": "7b9b28ff-fa91-5545-a678-1fbc0b5a8f69"
+      },
+      {
+        "id": "d3642524-8775-540c-90be-937cb7817802"
+      },
+      {
+        "id": "b3f84621-4a09-5aa1-ae51-9a587f03d202"
+      },
+      {
+        "id": "701b8334-905f-592c-b522-9b386174c77a"
+      },
+      {
+        "id": "c5997de9-2b0f-558b-afc2-10892dcadeb2"
+      }
+    ]
+  },
+  {
+    "productId": "114981999",
+    "title": "Too Faced Chocolate Soleil Matte Blurring Bronzer",
+    "brand": "Too Faced",
+    "url": "/too-faced-chocolate-soleil-matte-blurring-bronzer/p114981999",
+    "multiSku": true,
+    "defaultSkuId": "114981828",
+    "isAvailableToOrder": true,
+    "outOfStock": false,
+    "variantPriceRange": {
+      "display": {
+        "max": "£32.00",
+        "min": "£32.00"
+      },
+      "reductionHistory": [],
+      "value": {
+        "max": "32.00",
+        "min": "32.00"
+      },
+      "for": "ITEM"
+    },
+    "messaging": [],
+    "colorSwatches": [
+      {
+        "id": "ab465e80-3166-5e87-8014-3c0b3285cf80"
+      },
+      {
+        "id": "14f13eff-731c-5338-9966-f4970ded28e7"
+      },
+      {
+        "id": "3fc25a81-c024-5358-9cd4-09c9eeefb023"
+      },
+      {
+        "id": "c96acbaa-a961-513a-8630-4e69d88cf306"
+      },
+      {
+        "id": "81509934-267f-539c-aeb5-ffbfd3f59bf6"
+      },
+      {
+        "id": "bde11d57-40ef-58c7-9725-3fc09bfbe3be"
+      }
+    ]
+  }
+]

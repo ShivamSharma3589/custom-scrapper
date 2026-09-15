@@ -169,14 +169,18 @@ def write_all(payload: Dict[str, Any], paths) -> List[Path]:
         boots/clinique/2026-09-09_17-07-22.json   Clinique's products
         boots/clinique/2026-09-09_17-07-22.csv
         boots/campaigns/2026-09-09_17-07-22.json  every campaign running
+        boots/brands_campaigns/2026-09-09_17-07-22.json
+                                                  only those on the requested brands
         boots/rejected/2026-09-09_17-07-22.csv    what was refused, and why
 
     One folder per brand, so opening it shows that brand's whole history at
     this shop. Every file from one run shares a timestamp.
 
-    Campaigns repeat inside each brand's JSON, so one file answers "what is
-    this retailer doing to this brand". The campaigns folder holds the single
-    retailer-wide copy.
+    A brand's JSON lists only the campaigns that reached at least one of its
+    products, so it answers "what is this retailer doing to this brand". The
+    campaigns folder keeps every campaign the run found; at Boots 60 of 76
+    touched none of the requested brands. The brands_campaigns folder holds
+    the other 16 in one place, each naming the brands it reached.
     """
     written: List[Path] = []
 
@@ -186,14 +190,19 @@ def write_all(payload: Dict[str, Any], paths) -> List[Path]:
         for key in ("run_id", "retailer", "domain", "scraped_at", "run_stats")
     }
     campaigns = payload.get("campaigns") or []
+    # campaign id -> the requested brands whose products carry it
+    brands_by_campaign: Dict[str, set] = {}
 
     for brand, rows in sorted(group_by_brand(payload["products"]).items()):
+        applied = {cid for row in rows for cid in (row.get("applied_campaigns") or [])}
+        for cid in applied:
+            brands_by_campaign.setdefault(cid, set()).add(brand)
         written.append(write_json({
             **shared,
             "brand": brand,
             "target_brands": [brand],
             "products": rows,
-            "campaigns": campaigns,
+            "campaigns": [c for c in campaigns if c.get("campaign_id") in applied],
             "rejected": [
                 r for r in payload.get("rejected") or []
                 if (r.get("payload") or {}).get("brand_matched_to") == brand
@@ -210,6 +219,14 @@ def write_all(payload: Dict[str, Any], paths) -> List[Path]:
                               paths.file("campaigns", ".json")))
     written.append(_write_csv(campaigns, CAMPAIGN_COLUMNS,
                               paths.file("campaigns", ".csv")))
+
+    on_brands = [{**c, "brands": sorted(brands_by_campaign[c["campaign_id"]])}
+                 for c in campaigns if c.get("campaign_id") in brands_by_campaign]
+    written.append(write_json({**shared, "campaigns": on_brands},
+                              paths.file("brands_campaigns", ".json")))
+    written.append(_write_csv(
+        [{**c, "brands": ";".join(c["brands"])} for c in on_brands],
+        CAMPAIGN_COLUMNS + ["brands"], paths.file("brands_campaigns", ".csv")))
     written.append(_write_csv(_flat_rejections(payload), REJECTED_COLUMNS,
                               paths.file("rejected", ".csv")))
     return written

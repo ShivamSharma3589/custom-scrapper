@@ -36,6 +36,9 @@ PROMO_CODE = "code_discount"              # "Extra 10% off | Use Code: EXTRA10"
 PROMO_BUNDLE = "bundle"                   # "Buy 2 get 1 free"
 PROMO_GIFT = "gift_with_purchase"         # "Free gift when you spend £X"
 PROMO_SPEND_THRESHOLD = "spend_threshold"  # "Spend £50 get £10 off"
+PROMO_AMOUNT = "amount_discount"          # "Save £10 on selected Clinique"
+PROMO_PRICE_MATCH = "price_match"         # "Price matched: save 15%"
+PROMO_SALE = "sale"                       # "MAC Cosmetics Sale", "Reduced To Clear"
 PROMO_OTHER = "other"
 
 
@@ -66,6 +69,11 @@ class Campaign:
     record_type: str = "campaign"
 
     def __post_init__(self) -> None:
+        # done here, before the id, so every adapter's campaigns are cleaned
+        # the same way and a button label never makes two ids for one offer
+        from .normalize import strip_call_to_action
+        self.promotion_text = strip_call_to_action(self.promotion_text)
+
         # source URL excluded on purpose: one banner seen on twenty pages
         # is one campaign, not twenty
         if not self.campaign_id:

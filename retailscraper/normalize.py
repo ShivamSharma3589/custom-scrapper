@@ -61,6 +61,36 @@ def clean_text(raw: Optional[str]) -> Optional[str]:
     return collapsed or None
 
 
+# The button inside an offer tile, as rendered. Uppercase only, so copy such
+# as "Shop now and save 20%" is left alone. Everything after it is the button's
+# repeated badge or product names, e.g. "... SHOP NOW SAVE UP TO 20%".
+_CALL_TO_ACTION_RE = re.compile(
+    r"\s*\b(SHOP NOW|SHOP ALL|FIND OUT MORE|BUY NOW|LEARN MORE|DISCOVER MORE|SEE MORE|VIEW ALL)\b.*$",
+    re.DOTALL,
+)
+# Capitalised tab labels just before "SHOP ALL": "... ends soon! PERFUME AFTERSHAVE"
+_TRAILING_TABS_RE = re.compile(r"(?=(?:\s+[A-Z0-9&/'’.\-]+)*\s+[A-Z])(?:\s+[A-Z0-9&/'’.\-]+)+$")
+
+
+def strip_call_to_action(text: Optional[str]) -> Optional[str]:
+    """Offer copy without the button text scraped along with it.
+
+        "Save up to 20% on selected fragrance. Hurry, ends soon! SHOP NOW"
+        -> "Save up to 20% on selected fragrance. Hurry, ends soon!"
+
+    52 of 76 Boots campaigns carried a button label.
+    """
+    if not text:
+        return text
+    match = _CALL_TO_ACTION_RE.search(text)
+    if not match:
+        return text
+    kept = text[:match.start()]
+    if match.group(1) in ("SHOP ALL", "VIEW ALL") and re.search(r"[a-z]", kept):
+        kept = _TRAILING_TABS_RE.sub("", kept)
+    return kept.rstrip(" |-–—:,") or text
+
+
 def canonical_url(url: str) -> str:
     """Normalise a URL so equivalent addresses compare equal.
 

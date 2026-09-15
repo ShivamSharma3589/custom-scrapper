@@ -7,3 +7,6 @@ __pycache__/
 
 # Generated at runtime: John Lewis brand-page codes, re-resolved on demand.
 .jl_brand_codes.json
+
+# Secrets: proxy credentials. Copy .env.example to .env and fill it in.
+.env

@@ -22,8 +22,8 @@ import re
 from datetime import datetime, timezone
 from typing import Any, Dict, Iterable, List, Optional, Sequence
 
-from ..models import SCOPE_SITEWIDE, Campaign, Product
-from ..normalize import canonical_url, clean_text, extract_promo_code
+from ..models import SCOPE_SITEWIDE, SCOPE_UNRESOLVED, Campaign, Product
+from ..normalize import canonical_url, clean_text, extract_promo_code, strip_call_to_action
 from ..promotions import (
     classify_promotion,
     is_browse_facet,
@@ -93,9 +93,15 @@ class AllBeautyAdapter(RetailerAdapter):
         "gifts": "gifts",
     }
 
-    #: Collections that list what the store is promoting. Both verified to
-    #: exist; `/collections/special-offers` and `/clearance` return 404.
-    CAMPAIGN_HUB_PATHS = ["/collections/offers", "/collections/sale"]
+    #: Where offer discovery starts: the shop's offers page. It links every
+    #: live offer ("Clinique Up to 35% off", "Makeup Up to 50% off") and, in
+    #: its menu, the offer collections (bundles, outlet, value duos). The two
+    #: collections read before, /collections/offers and /collections/sale,
+    #: gave one campaign each; this page gave 18 on 15 Sep 2026.
+    CAMPAIGN_HUB_PATHS = ["/pages/offers"]
+
+    #: Safety stop for one offer collection's product pages (250 a page).
+    MAX_OFFER_PAGES = 20
 
     #: The only currency this adapter will publish.
     EXPECTED_CURRENCY = "GBP"
@@ -188,33 +194,117 @@ class AllBeautyAdapter(RetailerAdapter):
         return [f"https://{self.domain}{path}" for path in self.CAMPAIGN_HUB_PATHS]
 
     def campaign_seed_urls(self, brands: Sequence[str]) -> List[str]:
-        """The offer hubs, visited on a normal brand run too.
-
-        Every other adapter picks up campaigns for free, because the listings
-        it crawls are HTML and the promotional copy is on them. AllBeauty's
-        listings are `products.json` -- pure data, with no promotional copy
-        anywhere in it -- so without seeding these a brand run reports zero
-        campaigns for a site that is in fact running ten.
-
-        These are HTML pages and distinct from the JSON listing URLs, so
-        there is no risk of one URL being queued with two callbacks.
-        """
-        return self.campaign_discovery_urls()
+        """None. The offers page is read on every run as an offers page, so
+        the offers it links are followed and tied to their products."""
+        return []
 
     def scope_for_href(self, href: str):
         """AllBeauty's offer links are collection pages.
 
         A collection can be a brand or a theme and the URL does not say which,
         so anything that is not clearly the sitewide sale is left unresolved
-        rather than guessed into a brand campaign.
+        rather than guessed into a brand campaign. Which products an offer
+        covers comes from its collection's product list instead.
         """
         path = href.split(self.domain, 1)[-1]
-        if re.search(r"/collections/(sale|offers)\b", path):
+        if re.search(r"/collections/(sale|offers)/?$", path):
             return (SCOPE_SITEWIDE, None)
         return (None, None)
 
+    @staticmethod
+    def _handle(url: str) -> Optional[str]:
+        """The collection handle in a collection URL, or None."""
+        match = re.search(r"/collections/([a-z0-9-]+)", url or "")
+        return match.group(1) if match else None
+
+    @staticmethod
+    def _is_saving_tier(handle: str) -> bool:
+        """"At Least 30% Off" and similar: a filter by size of saving, not an offer."""
+        return bool(re.fullmatch(r"offers-(save|outlet)-\d+", handle))
+
+    def _offer_collections(self, response) -> List[tuple]:
+        """(link text, collection handle) for every offer collection linked here.
+
+        Two kinds: a link whose text states an offer ("Clinique Up to 35%
+        off"), and a collection in the shop's own offers section
+        (/collections/offers-bundles) whatever its link says.
+        """
+        found = {}
+        for node in response.css("a[href]"):
+            href = node.attrib.get("href") or ""
+            handle = self._handle(href)
+            if not handle or self._is_saving_tier(handle) or "/products/" in href:
+                continue
+            text = strip_call_to_action(clean_text(node.get_all_text())) or ""
+            offer_text = is_confident_offer(text) and not is_browse_facet(text, href)
+            if offer_text or handle.startswith("offers-") or handle in ("offers", "sale"):
+                if handle not in found or (offer_text and not is_confident_offer(found[handle])):
+                    found[handle] = text
+        return [(text, handle) for handle, text in found.items()]
+
     def extract_campaign_directory(self, response) -> List[Campaign]:
-        return self._scan_offer_links(response)
+        """Every offer an offers page links to.
+
+        Offer-worded links come from the shared scan. Collections in the
+        offers section that are named without a figure ("Value Duos",
+        "Outlet") are offers too, and are recorded under their own name.
+        """
+        campaigns = [c for c in self._scan_offer_links(response)
+                     if "/products/" not in (c.landing_url or "")]
+        worded = {self._handle(c.landing_url or "") for c in campaigns}
+        for text, handle in self._offer_collections(response):
+            if handle in worded or not text or not handle.startswith("offers-"):
+                continue
+            campaigns.append(Campaign(
+                retailer=self.display_name,
+                promotion_text=text,
+                promotion_type=classify_promotion(text),
+                scope=SCOPE_UNRESOLVED,
+                promo_code=extract_promo_code(text),
+                source_url=canonical_url(str(response.url)),
+                landing_url=f"https://{self.domain}/collections/{handle}",
+            ))
+        return campaigns
+
+    def offer_page_links(self, response) -> List[str]:
+        """What to read after an offers page.
+
+        From an HTML offers page: each linked offer collection's product list
+        (products.json), and each linked offers page such as /pages/makeup.
+        From a product list: its next page, while pages come back full.
+
+        `&offer=1` keeps the product list distinct from the same collection
+        read as a brand listing, which the crawler would otherwise skip as a
+        duplicate URL. Shopify ignores the parameter.
+        """
+        url = str(response.url)
+        payload = self._json(response)
+        if payload is not None:
+            page = int((re.search(r"[?&]page=(\d+)", url) or [None, "1"])[1])
+            if len(payload.get("products") or []) >= _PAGE_SIZE and page < self.MAX_OFFER_PAGES:
+                return [re.sub(r"([?&]page=)\d+", rf"\g<1>{page + 1}", url)]
+            return []
+
+        links = [f"https://{self.domain}/collections/{handle}/products.json"
+                 f"?limit={_PAGE_SIZE}&page=1&offer=1"
+                 for _, handle in self._offer_collections(response)]
+        for node in response.css("a[href]"):
+            href = (node.attrib.get("href") or "").split("?")[0]
+            text = strip_call_to_action(clean_text(node.get_all_text())) or ""
+            if re.match(r"(https://allbeauty\.com)?/pages/[a-z0-9-]+$", href) and is_confident_offer(text):
+                links.append(href if href.startswith("http") else f"https://{self.domain}{href}")
+        return list(dict.fromkeys(links))
+
+    def offer_page_of(self, url: str) -> str:
+        """The collection an offer product list belongs to."""
+        return re.sub(r"/products\.json.*$", "", url)
+
+    def offer_page_products(self, response) -> List[str]:
+        """Ids of the products in an offer collection's product list."""
+        payload = self._json(response)
+        if not payload:
+            return []
+        return [str(p["id"]) for p in payload.get("products") or [] if p.get("id")]
 
     def is_product_url(self, url: str) -> bool:
         return bool(_PRODUCT_URL_RE.match(url.split("?")[0]))
@@ -401,7 +491,9 @@ class AllBeautyAdapter(RetailerAdapter):
                     retailer=self.display_name,
                     promotion_text=text,
                     promotion_type=classify_promotion(text),
-                    scope=SCOPE_SITEWIDE,
+                    # a heading on an offers page names one section of it
+                    # ("UP TO 60% OFF FRAGRANCE"), not the whole shop
+                    scope=SCOPE_UNRESOLVED,
                     scope_value=None,
                     promo_code=extract_promo_code(text),
                     source_url=canonical_url(url),

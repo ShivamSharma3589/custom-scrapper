@@ -39,6 +39,9 @@ class RetailPromotionSpider(SitemapSpider):
     concurrent_requests_per_domain = 2
     download_delay = 1.0
 
+    #: Refusals in a row after which the crawl moves to a backup session.
+    SWITCH_AFTER_REFUSALS = 3
+
     def __init__(
         self,
         adapter: RetailerAdapter,
@@ -129,6 +132,13 @@ class RetailPromotionSpider(SitemapSpider):
         # offers page (URL without its page number) -> ids of the products it
         # lists. A campaign landing on that page applies to exactly these.
         self.offer_members: Dict[str, set] = {}
+
+        # refusals since the last page that loaded, and the sessions given up
+        # on because of them, in order
+        self._refused_in_a_row = 0
+        self.switched_sessions: List[str] = []
+        #: which browser is serving requests now: "default", then "proxy1" ...
+        self._active_session = "default"
 
         super().__init__(crawldir=crawldir)
 
@@ -246,7 +256,8 @@ class RetailPromotionSpider(SitemapSpider):
         Campaigns are read here too: listing pages carry the brand-level
         promotional copy that never appears on a product page.
         """
-        for campaign in self.adapter.extract_campaigns(response):
+        listing_campaigns = self.adapter.extract_campaigns(response)
+        for campaign in listing_campaigns:
             self._record_campaign(campaign)
 
         meta = response.meta or {}
@@ -255,17 +266,25 @@ class RetailPromotionSpider(SitemapSpider):
         # Some retailers publish the catalogue as data rather than as a grid
         # of links. When a listing carries complete products, take them and
         # do not also queue a page per product -- that would be hundreds of
-        # requests for data already in hand.
+        # requests for data already in hand. Only the pages the adapter still
+        # needs are queued.
         direct = self.adapter.extract_products_from_listing(response, meta.get("brand"))
         if direct:
             self.logger.info(
                 f"{len(direct)} product(s) read directly from {response.url}"
             )
+            # a tile's own offers are the listing campaigns with its wording
+            by_text = {c.promotion_text: c.campaign_id for c in listing_campaigns}
             for product in direct:
-                self._accept_product(product, meta)
-            return
+                own = [by_text[part] for part in (product.promotional_copy or "").split(" | ")
+                       if part in by_text]
+                self._accept_product(product, {**meta, "page_offers": own})
+            links = self.adapter.product_pages_to_read(response, meta.get("brand"))
+            listed = [p.product_id for p in direct] + links
+        else:
+            links = self.adapter.extract_product_links(response, meta.get("brand"))
+            listed = links
 
-        links = self.adapter.extract_product_links(response, meta.get("brand"))
         for url in links:
             request = Request(url, callback=self.parse_product_page,
                               meta=inherited or None)
@@ -276,8 +295,8 @@ class RetailPromotionSpider(SitemapSpider):
         # what comes next: lists a brand page links to, or the next page
         list_url = str(meta.get("url") or response.url).split("?")[0]
         seen = self._list_links.setdefault(list_url, set())
-        added = len(set(links) - seen)
-        seen.update(links)
+        added = len(set(listed) - seen)
+        seen.update(listed)
 
         for url in self.adapter.more_listing_pages(response, meta, added):
             yield self._listing_request(url, meta.get("brand"), meta.get("category"))
@@ -348,7 +367,51 @@ class RetailPromotionSpider(SitemapSpider):
         if blocked:
             brand = self._brand_for_url(str(response.url))
             self.blocked_by_brand[brand] = self.blocked_by_brand.get(brand, 0) + 1
+        self._refused_in_a_row = self._refused_in_a_row + 1 if blocked else 0
         return blocked
+
+    async def retry_blocked_request(self, request: Request, response) -> Request:
+        """Move the crawl to the adapter's next session once the current one
+        is refused several times in a row.
+
+        One refusal can be a blip. A run of them is the retailer blocking
+        this IP: John Lewis answered every request with 403 from its 153rd
+        page load onwards.
+
+        The backup browser is started and put in place of the refused one
+        under the same session id. That id matters: the crawler stamps it on
+        every request as it is queued, so dropping the refused session instead
+        left hundreds of queued requests pointing at a session that no longer
+        existed, and each one failed silently.
+        """
+        manager = self._session_manager
+        current = manager.default_session_id
+        if self._refused_in_a_row < self.SWITCH_AFTER_REFUSALS or (request.sid or current) != current:
+            return request
+
+        for backup_id in [sid for sid in self.adapter.backup_session_ids if sid in manager.session_ids]:
+            backup = manager.pop(backup_id)
+            try:
+                await backup.__aenter__()
+            except Exception as exc:
+                self.logger.warning(f"backup session {backup_id!r} would not start, trying the next: {exc}")
+                continue
+
+            retired = manager.pop(current)
+            manager.add(current, backup, default=True)
+            self._refused_in_a_row = 0
+            self.switched_sessions.append(self._active_session)
+            self.logger.warning(
+                f"session {self._active_session!r} refused {self.SWITCH_AFTER_REFUSALS} requests "
+                f"in a row; moving to {backup_id!r}"
+            )
+            self._active_session = backup_id
+            try:
+                await retired.close()
+            except Exception as exc:  # pragma: no cover - closing is best effort
+                self.logger.debug(f"closing the refused session: {exc}")
+            break
+        return request
 
     def _brand_for_url(self, url: str) -> str:
         """Which requested brand a candidate URL appears to belong to.
@@ -490,7 +553,8 @@ class RetailPromotionSpider(SitemapSpider):
         # to exactly those. Every page of a paged offer adds to the same set.
         members = self.adapter.offer_page_products(response)
         if members:
-            self.offer_members.setdefault(_page_key(str(response.url)), set()).update(members)
+            page = self.adapter.offer_page_of(str(response.url))
+            self.offer_members.setdefault(_page_key(page), set()).update(members)
 
         self.logger.info(
             f"campaign directory: {len(self.campaigns)} campaign(s) known "

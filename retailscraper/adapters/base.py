@@ -112,9 +112,19 @@ class RetailerAdapter(ABC):
 
         For retailers that publish the catalogue as data -- AllBeauty's
         Shopify JSON returns 250 complete products in one request. Returning
-        anything here tells the crawler not to follow product links as well.
+        anything here tells the crawler not to follow product links as well,
+        except those `product_pages_to_read` names.
         """
         return []
+
+    def product_pages_to_read(self, response: "Response", brand: Optional[str] = None) -> List[str]:
+        """Product pages still needed after a listing gave products directly,
+        for products the listing cannot describe exactly."""
+        return []
+
+    #: Sessions to move to, in order, once the current one is being refused.
+    #: Filled in by `configure_session` when the adapter has any.
+    backup_session_ids: Sequence[str] = ()
 
     def extract_product_links(self, response, brand: Optional[str] = None) -> List[str]:
         """Product URLs found on a listing page.
@@ -214,6 +224,12 @@ class RetailerAdapter(ABC):
         """
         return []
 
+    def offer_page_of(self, url: str) -> str:
+        """The offers page a fetched URL belongs to, for tying an offer to its
+        products. Usually the URL itself; AllBeauty reads an offer collection
+        through its products.json."""
+        return url
+
     def promotion_key(self, campaign: Campaign) -> Optional[str]:
         """The retailer's own name for an offer, when the campaign's link
         carries one. Used to tie a hub banner to the products showing that
@@ -253,14 +269,16 @@ class RetailerAdapter(ABC):
         navigation ("gift finder", "gift cards").
         """
         from ..models import SCOPE_UNRESOLVED
-        from ..normalize import clean_text, extract_promo_code
+        from ..normalize import clean_text, extract_promo_code, strip_call_to_action
         from ..promotions import classify_promotion, is_browse_facet, is_confident_offer
 
         campaigns: List[Campaign] = []
         seen = set()
 
         for node in response.css("a[href]"):
-            text = clean_text(node.get_all_text())
+            # an offer tile's link wraps its button too, so the type is judged
+            # on the offer copy alone
+            text = strip_call_to_action(clean_text(node.get_all_text()))
             if not text or text in seen or not is_confident_offer(text):
                 continue
 
