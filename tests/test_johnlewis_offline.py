@@ -303,8 +303,8 @@ def run() -> int:
          loaded.get("clinique", {}).get("slug") == "clinique"),
         ("a new entry keeps the site's own slug",
          loaded.get("estee-lauder", {}).get("slug") == "est%C3%A9e-lauder"),
-        ("and its measured page count",
-         loaded.get("estee-lauder", {}).get("pages") == 7),
+        ("but not its old page count, which goes stale",
+         "pages" not in loaded.get("estee-lauder", {})),
     ]:
         failures += 0 if ok else 1
         print(f"  {'ok  ' if ok else 'FAIL'} {label}")
@@ -397,8 +397,168 @@ def run() -> int:
     failures += 0 if ok else 1
     print(f"  {'ok  ' if ok else 'FAIL'} no URL serves both roles  overlap={seeds & listings or 'none'}")
 
+    failures += coverage_checks()
+
     print(f"\n{'ALL CHECKS PASSED' if failures == 0 else f'{failures} CHECK(S) FAILED'}")
     return 1 if failures else 0
+
+
+def coverage_checks() -> int:
+    """What a run reaches: shade products, every listing page, the live offers.
+
+    Found on the live site on 15 Sep 2026: shade products publish a
+    ProductGroup and were all dropped (6 of 6 MAC sampled); brand listings
+    were capped at 2 pages though Clinique states 4; and both offer pages the
+    adapter read had been emptied, missing "Save 15% Bobbi Brown".
+    """
+    import json
+
+    from retailscraper.adapters.johnlewis import JohnLewisAdapter
+    from retailscraper.models import SCOPE_UNRESOLVED, Campaign, Product
+    from retailscraper.spider import RetailPromotionSpider
+
+    failures = 0
+
+    def check(label, ok, detail=""):
+        nonlocal failures
+        failures += 0 if ok else 1
+        print(f"  {'ok  ' if ok else 'FAIL'} {label}" + (f"  {detail}" if not ok else ""))
+
+    adapter = JohnLewisAdapter()
+
+    print("\n=== a product sold in shades is read, once ===")
+    group = {
+        "@type": "ProductGroup", "name": "Bobbi Brown Natural Brow Shaper",
+        "brand": {"@type": "Brand", "name": "Bobbi Brown"}, "category": "Beauty",
+        "productGroupID": "109111579",
+        "hasVariant": [
+            {"@type": "Product", "name": "Bobbi Brown Natural Brow Shaper, Clear",
+             "url": "https://www.johnlewis.com/bobbi-brown-natural-brow-shaper/clear/p109111579",
+             "offers": [{"@type": "Offer", "sku": "109111571", "price": "24.00",
+                         "priceCurrency": "GBP", "availability": "https://schema.org/InStock"}]},
+            {"@type": "Product", "name": "Bobbi Brown Natural Brow Shaper, Blonde",
+             "url": "https://www.johnlewis.com/bobbi-brown-natural-brow-shaper/blonde/p109111579",
+             "offers": [{"@type": "Offer", "sku": "109111572", "price": "25.00",
+                         "priceCurrency": "GBP", "availability": "https://schema.org/OutOfStock"}]},
+        ],
+    }
+    page = Selector(
+        url="https://www.johnlewis.com/bobbi-brown-natural-brow-shaper/blonde/p109111579",
+        content=f'<html><head><script type="application/ld+json">{json.dumps(group)}</script></head></html>')
+    product = adapter.extract_product(page, ["Bobbi Brown"])
+    check("the product is no longer dropped", product is not None)
+    if product:
+        check("named for the product, not one shade",
+              product.product_title == "Bobbi Brown Natural Brow Shaper", product.product_title)
+        check("brand proved from the group", product.brand == "Bobbi Brown", product.brand)
+        check("price and stock from the shade on this page",
+              (product.current_price, product.sku, product.availability) == (25.0, "109111572", "OutOfStock"),
+              (product.current_price, product.sku, product.availability))
+        check("shade count recorded", product.variant_count == 2, product.variant_count)
+        check("passes validation", validate(product, ["Bobbi Brown"]) is None,
+              validate(product, ["Bobbi Brown"]))
+
+    print("\n=== a brand listing is walked to its stated page count ===")
+    base = "https://www.johnlewis.com/brand/clinique/_/N-1z13ywm"
+    first = Selector(url=base, content='<script>{"results":234,"pagesAvailable":4}</script>')
+    more = adapter.more_listing_pages(first, {"brand": "Clinique", "url": base}, added=72)
+    check("pages 2 to 4", more == [f"{base}?page={n}" for n in (2, 3, 4)], more)
+    check("a later page adds none",
+          adapter.more_listing_pages(first, {"brand": "Clinique", "url": base + "?page=2"}, 72) == [])
+    check("the stated total is kept for the coverage check",
+          adapter.expected_product_count(["Clinique"]) == 234, adapter.expected_product_count(["Clinique"]))
+    check("nothing is claimed for a brand whose listing was not read",
+          adapter.expected_product_count(["MAC"]) is None)
+
+    print("\n=== offers come from the live Sale & Offers page ===")
+    hubs = adapter.campaign_discovery_urls()
+    check("the emptied offer pages are gone",
+          hubs == ["https://www.johnlewis.com/special-offers/c50000110"], hubs)
+    hub = Selector(url=hubs[0], content="""<html><body>
+        <a href="/browse/special-offers/beauty-fragrance-offers/bobbi-brown/_/N-eg5Z1z13yxd">Save 15% Bobbi Brown</a>
+        <a href="/special-offers/beauty-fragrance-offers/c60000270016">Beauty</a>
+        <a href="/brand/clinique/_/N-1z13ywm">Clinique</a>
+    </body></html>""")
+    links = adapter.offer_page_links(hub)
+    check("every special-offers page it links", links == [
+        "https://www.johnlewis.com/browse/special-offers/beauty-fragrance-offers/bobbi-brown/_/N-eg5Z1z13yxd",
+        "https://www.johnlewis.com/special-offers/beauty-fragrance-offers/c60000270016"], links)
+
+    adapter._wanted_slugs = ["bobbi-brown"]  # what prepare() records, without its network call
+    offer_url = links[0]
+    ours = Selector(url=offer_url, content="""<script>{"results":100,"pagesAvailable":2}</script>
+        <a href="/bobbi-brown-natural-brow-shaper/clear/p109111579">brow</a>""")
+    theirs = Selector(url="https://www.johnlewis.com/browse/special-offers/furniture/_/N-nt4y", content="""
+        <script>{"results":900,"pagesAvailable":13}</script><a href="/sofa/p5000001">sofa</a>""")
+    check("an offer listing a requested brand is paged",
+          offer_url + "?page=2" in adapter.offer_page_links(ours))
+    check("one that does not is read once only",
+          not any("?page=" in u for u in adapter.offer_page_links(theirs)))
+
+    # Following every offers link walked the whole shop: 272 of 435 requests
+    # went on furniture and other departments, then John Lewis sent 403s.
+    furniture = Selector(url="https://www.johnlewis.com/special-offers/home-furniture-offers/c90000300044",
+                         content="""<a href="/sofa/p5000001">sofa</a>
+        <a href="/browse/special-offers/home-furniture-offers/living-dining/_/N-1">Living room</a>
+        <a href="/browse/special-offers/home-furniture-offers/beds/_/N-2">Beds</a>""")
+    check("a department listing none of the brands: its offers are not followed",
+          adapter.offer_page_links(furniture) == [], adapter.offer_page_links(furniture))
+    beauty = Selector(url="https://www.johnlewis.com/special-offers/beauty-fragrance-offers/c60000270016",
+                      content="""<a href="/dior-lipstick/p7000001">dior</a>
+        <a href="/browse/special-offers/beauty-fragrance-offers/bobbi-brown/_/N-eg5Z1z13yxd">15% off Bobbi Brown</a>
+        <a href="/browse/special-offers/beauty-fragrance-offers/dior/_/N-eg5Zoix5">15% off DIOR</a>""")
+    followed = adapter.offer_page_links(beauty)
+    check("from a department page, only offers naming a requested brand",
+          followed == ["https://www.johnlewis.com/browse/special-offers/beauty-fragrance-offers/bobbi-brown/_/N-eg5Z1z13yxd"],
+          followed)
+    check("the Sale & Offers page itself still leads to every department",
+          len(adapter.offer_page_links(hub)) == 2)
+
+    # Inside beauty, following every link from any page listing a requested
+    # brand walked every filtered view: 80 pages read and 95 still queued.
+    beauty_with_ours = Selector(url=beauty.url, content="""
+        <a href="/bobbi-brown-brow/p109111579">brow</a>
+        <a href="/browse/special-offers/beauty-fragrance-offers/_/N-eg5">All beauty offers</a>
+        <a href="/browse/special-offers/beauty-fragrance-offers/dior/_/N-eg5Zoix5">15% off DIOR</a>""")
+    wide = adapter.offer_page_links(beauty_with_ours)
+    check("a department page listing a requested brand: all its offers, once", len(wide) == 2, wide)
+    all_beauty = Selector(url="https://www.johnlewis.com/browse/special-offers/beauty-fragrance-offers/_/N-eg5",
+                          content="""<script>{"results":600,"pagesAvailable":9}</script>
+        <a href="/bobbi-brown-brow/p109111579">brow</a>
+        <a href="/browse/special-offers/beauty-fragrance-offers/lipsticks/_/N-eg5Z1yzjn">Lipsticks</a>
+        <a href="/browse/special-offers/beauty-fragrance-offers/bobbi-brown/_/N-eg5Z1z13yxd">Bobbi Brown</a>""")
+    narrow = adapter.offer_page_links(all_beauty)
+    check("one level further: only offers naming a requested brand", narrow == [
+        "https://www.johnlewis.com/browse/special-offers/beauty-fragrance-offers/bobbi-brown/_/N-eg5Z1z13yxd"], narrow)
+    check("and a filtered view is not paged, even when it lists the brand",
+          not any("?page=" in u for u in narrow))
+    check("its products are the offer's members",
+          adapter.offer_page_products(ours) == ["109111579"], adapter.offer_page_products(ours))
+
+    print("\n=== the offer reaches its products, including a size split out of a page ===")
+    spider = RetailPromotionSpider(adapter=adapter, brands=["Bobbi Brown", "Clinique"])
+
+    def record(pid, url):
+        return Product(retailer="John Lewis", brand="Bobbi Brown", brand_verified_by="json_ld_brand",
+                       product_id=pid, product_title=pid, product_url=url, source_url=url,
+                       current_price=24.0, currency="GBP", scraped_at="2026-09-15T00:00:00+00:00")
+
+    brow = record("109111579", "https://www.johnlewis.com/bobbi-brown-natural-brow-shaper/clear/p109111579")
+    sized = record("240011555", "https://www.johnlewis.com/bobbi-brown-vitamin-face-base/50ml/p5000123")
+    other = record("48000001", "https://www.johnlewis.com/clinique-lotion/p48000001")
+    for item in (brow, sized, other):
+        spider.products[item.product_id] = item
+    save15 = Campaign(retailer="John Lewis", promotion_text="Save 15% Bobbi Brown",
+                      promotion_type="percentage_discount", scope=SCOPE_UNRESOLVED,
+                      source_url=hubs[0], landing_url=offer_url)
+    spider.campaigns[save15.campaign_id] = save15
+    spider.offer_members[offer_url.rstrip("/").lower()] = {"109111579", "5000123"}
+    spider.apply_campaigns()
+    check("on the product its offer page lists", save15.campaign_id in brow.applied_campaigns)
+    check("on a size whose page the offer lists", save15.campaign_id in sized.applied_campaigns)
+    check("not on a product it does not list", save15.campaign_id not in other.applied_campaigns)
+
+    return failures
 
 
 if __name__ == "__main__":

@@ -29,12 +29,14 @@ import json
 import re
 from datetime import datetime, timezone
 from typing import Any, Dict, Iterable, List, Optional, Sequence
+from urllib.parse import parse_qs, urlparse
 
 from ..models import (
     SCOPE_BRAND,
     SCOPE_CATEGORY,
     SCOPE_PRODUCT,
     SCOPE_SITEWIDE,
+    SCOPE_UNRESOLVED,
     Campaign,
     Product,
 )
@@ -314,18 +316,61 @@ class LookfantasticAdapter(RetailerAdapter):
 
     # --- campaign extraction ---------------------------------------------
 
-    #: The offers hub, plus the standing sale landing pages it links to. Taken
-    #: from the `sitemap-list` sitemap, which lists 57 offer pages; these are
-    #: the hubs that lead to the rest rather than the whole set.
+    #: Where offer discovery starts. The rest are found two ways: `prepare`
+    #: reads every offer and sale page the shop's list sitemap names (57 on
+    #: 15 Sep 2026), and `offer_page_links` follows the offer links on each
+    #: page, which catches ones the sitemap misses, such as the seasonal sale.
     CAMPAIGN_HUB_PATHS = [
         "/c/health-beauty/offers/view-all/",
         "/c/health-beauty/offers/",
         "/c/offers/sale/",
     ]
 
+    #: The shop's own list of category and landing pages.
+    OFFER_SITEMAP = "https://www.lookfantastic.com/sitemapindex-list.xml.gz"
+
+    #: Safety stop for one offer's pages. Real offers seen so far run to
+    #: about 20; this only guards against a page that never ends.
+    MAX_OFFER_PAGES = 100
+
+    def __init__(self) -> None:
+        #: Offer and sale pages read from the list sitemap by `prepare`.
+        self.listed_offer_pages: List[str] = []
+        #: Offers whose pages hit MAX_OFFER_PAGES, reported by `crawl_warnings`.
+        self._capped_offers: set = set()
+
+    def prepare(self, brands: Sequence[str]) -> List[str]:
+        """Read every offer and sale page from the list sitemap.
+
+        Many are only reachable from emails or partner sites, like "15% Off
+        Selected | Use Code: TREAT", which lists Clinique products whose own
+        pages never mention that code. The sitemap is the only place they
+        can be found.
+        """
+        import gzip
+        from scrapling.fetchers import Fetcher
+
+        def locations(url: str) -> List[str]:
+            body = Fetcher.get(url, stealthy_headers=True, timeout=60).body
+            if body[:2] == b"\x1f\x8b":
+                body = gzip.decompress(body)
+            return re.findall(r"<loc>\s*([^<\s]+)\s*</loc>", body.decode("utf-8", "replace"))
+
+        try:
+            pages = [url for sitemap in locations(self.OFFER_SITEMAP)
+                     for url in locations(sitemap)]
+        except Exception as exc:
+            return [f"could not read the offer pages from {self.OFFER_SITEMAP} ({exc}), "
+                    f"so only the offer pages linked from the hubs were read"]
+
+        self.listed_offer_pages = list(dict.fromkeys(
+            url for url in pages if re.search(r"/[^/]*(?:offer|sale)[^/]*/", url)))
+        return []
+
     def campaign_discovery_urls(self) -> List[str]:
-        """Offer hub pages, for a campaigns-only run."""
-        return [f"https://{self.domain}{path}" for path in self.CAMPAIGN_HUB_PATHS]
+        """The hubs, plus every offer page the list sitemap names."""
+        hubs = [f"https://{self.domain}{path}" for path in self.CAMPAIGN_HUB_PATHS]
+        return list(dict.fromkeys(hubs + self.listed_offer_pages))
 
     def scope_for_href(self, href: str):
         """Read an offer's reach from where its link points.
@@ -358,15 +403,83 @@ class LookfantasticAdapter(RetailerAdapter):
         return (None, None)
 
     def extract_campaign_directory(self, response) -> List[Campaign]:
-        """Every offer advertised on this page's links.
+        """Every offer on an offers page: its links, and the page's own heading.
 
-        Lookfantastic advertises its live campaigns in the site navigation
-        (`a.navigation-item`), which means one fetch of the offers hub returns
-        the current campaign set. That nav is on every page, which is exactly
-        why this is not part of `extract_campaigns` -- doing it there would
+        The links are the site navigation's offers, which is on every page and
+        is why this is not part of `extract_campaigns` -- doing it there would
         staple the whole offer menu onto every product.
+
+        The heading is the offer this page itself is for, e.g. "MAC Cosmetics
+        Sale" or "15% Off Selected | Use Code: TREAT". Its landing page is
+        this page, so it gets attached to exactly the products listed here.
         """
-        return self._scan_offer_links(response)
+        # a product tile can read like an offer ("New Taormina Orange ...") but
+        # it is one product, not a campaign
+        campaigns = [c for c in self._scan_offer_links(response)
+                     if not self.is_product_url(c.landing_url or "")]
+
+        heading =clean_text(response.css("h1")[0].get_all_text()) if response.css("h1") else None
+        # "Sale" alone does not pass looks_like_offer, but on a page reached
+        # as an offers page it names the offer ("Makeup Sale & Offers")
+        if heading and (looks_like_offer(heading) or re.search(r"\bsale\b", heading, re.I)):
+            page = str(response.url).split("?")[0]
+            scope, scope_value = self.scope_for_href(page)
+            campaigns.append(Campaign(
+                retailer=self.display_name,
+                promotion_text=heading,
+                promotion_type=classify_promotion(heading),
+                scope=scope or SCOPE_UNRESOLVED,
+                scope_value=scope_value,
+                promo_code=extract_promo_code(heading),
+                source_url=str(response.url),
+                landing_url=page,
+            ))
+        return campaigns
+
+    def offer_page_products(self, response) -> List[str]:
+        """Ids of the products in this offer, from the page's product grid.
+
+        Only `#product-list` is read. The rest of the page carries around
+        seven recommended products that are not in the offer.
+        """
+        ids = []
+        for node in response.css("#product-list a"):
+            href = (node.attrib.get("href") or "").split("?")[0]
+            if href.startswith("/"):
+                href = f"https://{self.domain}{href}"
+            if self.is_product_url(href):
+                ids.append(self._product_id_from_url(href))
+        return list(dict.fromkeys(i for i in ids if i))
+
+    def offer_page_links(self, response) -> List[str]:
+        """Offers pages to read after this one.
+
+        The landing page of every offer linked here, and this offer's next
+        page while its product grid is not empty. Pages are numbered
+        ?pageNumber=N and Lookfantastic links the next one from each page.
+        """
+        links = []
+        for campaign in self._scan_offer_links(response):
+            url = (campaign.landing_url or "").split("?")[0]
+            if urlparse(url).netloc == self.domain and not self.is_product_url(url):
+                links.append(url)
+
+        address = urlparse(str(response.url))
+        page = int(parse_qs(address.query).get("pageNumber", ["1"])[0])
+        next_page = f"https://{self.domain}{address.path}?pageNumber={page + 1}"
+        linked = re.search(rf"pageNumber={page + 1}(?!\d)", response.html_content)
+        if linked and self.offer_page_products(response):
+            if page + 1 <= self.MAX_OFFER_PAGES:
+                links.append(next_page)
+            else:
+                self._capped_offers.add(address.path)
+
+        return list(dict.fromkeys(links))
+
+    def crawl_warnings(self) -> List[str]:
+        return [f"offer page {path} has more than {self.MAX_OFFER_PAGES} pages; "
+                f"products after that were not linked to its offer"
+                for path in sorted(self._capped_offers)]
 
     def extract_campaigns(self, response) -> List[Campaign]:
         return self.parse_campaigns(response, str(response.url))

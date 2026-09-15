@@ -205,6 +205,15 @@ class RetailerAdapter(ABC):
         site rather than listed in the adapter."""
         return []
 
+    def offer_page_products(self, response: "Response") -> List[str]:
+        """Ids of the products an offers page lists as being in its offer.
+
+        When filled in, a campaign whose link lands on that page is attached
+        to exactly those products. Leave empty when the page's product list
+        cannot be read reliably.
+        """
+        return []
+
     def promotion_key(self, campaign: Campaign) -> Optional[str]:
         """The retailer's own name for an offer, when the campaign's link
         carries one. Used to tie a hub banner to the products showing that

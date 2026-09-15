@@ -19,7 +19,12 @@ and the crawl uses that rather than a fixed depth.
 
 **Product pages** carry a rich JSON-LD `Product`: `brand` as an explicit
 Brand object, `category` as a real taxonomy path, and `offers` with sku,
-price, currency and availability.
+price, currency and availability. A product sold in shades publishes a
+`ProductGroup` instead, and is read as one product.
+
+**Offers** start at the "Sale & Offers" page (/special-offers/c50000110) and
+follow its /special-offers/ links. An offer listing's products are what its
+offer is attached to.
 
 The JSON-LD holds only the current price, so the was-price comes from the PDP
 price block (`data-testid="price-prev"` / `"price-now"`). The recommendation
@@ -140,11 +145,6 @@ _NEXT_DATA_RE = re.compile(
 #: an unstocked brand from walking all 199.
 _MAX_GRID_SHARDS = 6
 
-#: John Lewis serves two pages of any listing and 404s the third, whatever
-#: `pagesAvailable` reports. Asking beyond this wastes requests against a
-#: retailer that throttles by returning 404, which looks like an empty shelf.
-_MAX_LISTING_PAGES = 2
-
 
 @register
 class JohnLewisAdapter(RetailerAdapter):
@@ -181,9 +181,6 @@ class JohnLewisAdapter(RetailerAdapter):
     # resolve is a fault rather than an absence.
     confirms_brand_stocking = True
 
-    #: Products per brand listing page, as John Lewis renders them.
-    listing_page_size = 24
-
     CATEGORY_SLUGS = {
         "skincare": "skin care",
         "makeup": "make-up",
@@ -202,6 +199,12 @@ class JohnLewisAdapter(RetailerAdapter):
 
     def __init__(self) -> None:
         self._codes: Optional[Dict[str, str]] = None
+        #: brand slug -> the product total its listing states on this run
+        self._stated_results: Dict[str, int] = {}
+        #: slugs of the brands asked for, so only their offers are followed
+        self._wanted_slugs: List[str] = []
+        #: offers page -> links from the Sale & Offers page (0 is that page)
+        self._offer_depth: Dict[str, int] = {}
 
     # --- fetching ---------------------------------------------------------
 
@@ -269,18 +272,9 @@ class JohnLewisAdapter(RetailerAdapter):
             if isinstance(value, str):
                 upgraded[key] = {"code": value, "slug": key}
             elif isinstance(value, dict) and value.get("code"):
-                entry = {
-                    "code": value["code"],
-                    "slug": value.get("slug") or key,
-                }
-                # Anything measured later -- page count, category facets --
-                # is carried through. Whitelisting only code and slug once
-                # silently dropped the facets `prepare` had just written, so
-                # discovery fell back to the brand root's two pages.
-                for extra in ("pages", "results", "facets"):
-                    if value.get(extra):
-                        entry[extra] = value[extra]
-                upgraded[key] = entry
+                # Older caches also hold page counts and category lists.
+                # Those go stale and are read live from the listing instead.
+                upgraded[key] = {"code": value["code"], "slug": value.get("slug") or key}
         return upgraded
 
     def _save_cached_codes(self, codes: Dict[str, Dict[str, str]]) -> None:
@@ -299,86 +293,30 @@ class JohnLewisAdapter(RetailerAdapter):
         loop fails. Doing it here also means an unstocked brand is reported
         as a warning instead of silently contributing nothing.
         """
+        # John Lewis's slug and the plain one: its Jo Malone pages say
+        # jo-malone-london, an offer link may just say "Jo Malone"
+        self._wanted_slugs = list(dict.fromkeys(
+            slug for b in brands
+            for slug in (self._brand_slug(b), re.sub(r"[^a-z0-9]+", "-", b.lower()).strip("-"))))
         pages = self.brand_pages(brands, resolve=True)
-        warnings = [
+        return [
             f"no John Lewis brand page found for {brand!r} in the A-Z index "
             f"-- it may not be stocked. Continuing without it."
             for brand in brands
             if self._brand_slug(brand) not in pages
         ]
-        warnings.extend(self._measure_catalogues(brands, pages))
-        return warnings
 
     def expected_product_count(self, brands: Sequence[str]) -> Optional[int]:
-        """The total John Lewis says it lists for these brands.
+        """The total John Lewis's listings stated during this run.
 
-        Read from each brand listing by `prepare()` and cached, so asking
-        costs nothing. It is what makes a soft-blocked crawl visible: John
-        Lewis states `results: 236` for Clinique and then answers page three
-        with a 404, so a run that collects 48 of them would otherwise report
-        success with a fifth of the catalogue.
+        It is what makes a soft-blocked crawl visible: a run that collects
+        48 of the 234 Clinique products John Lewis says it has would
+        otherwise report success. Read live from each brand's first listing
+        page, never from the cache, whose counts go stale.
         """
-        totals = [
-            int(page["results"])
-            for page in self.brand_pages(brands).values()
-            if str(page.get("results", "")).isdigit()
-        ]
+        totals = [self._stated_results[self._brand_slug(b)]
+                  for b in brands if self._brand_slug(b) in self._stated_results]
         return sum(totals) if totals else None
-
-    def _measure_catalogues(
-        self, brands: Sequence[str], pages: Dict[str, Dict[str, str]]
-    ) -> List[str]:
-        """Ask each brand listing how big it is, and remember the answer.
-
-        John Lewis states both numbers on the listing itself
-        (`"results":236,"pagesAvailable":10`), so the depth to crawl is the
-        retailer's own count rather than a guess. Without this the crawl
-        stopped at the framework's default four pages -- 96 of Clinique's 236
-        products -- and the shortfall was invisible in the output.
-        """
-        from scrapling.fetchers import StealthyFetcher
-
-        notes: List[str] = []
-        dirty = False
-        cache = self._load_cached_codes()
-
-        for brand in brands:
-            slug = self._brand_slug(brand)
-            page = pages.get(slug)
-            if not page or cache.get(slug, {}).get("pages"):
-                continue
-            url = f"https://{self.domain}/brand/{page['slug']}/_/N-{page['code']}"
-            try:
-                response = StealthyFetcher.fetch(
-                    url, headless=True, network_idle=True
-                )
-                html = getattr(response, "html_content", None) or str(response)
-            except Exception:
-                continue
-
-            found = _LISTING_SIZE_RE.search(html)
-            if not found:
-                continue
-            results, available = int(found.group(1)), int(found.group(2))
-            entry = cache.setdefault(slug, dict(page))
-            entry["pages"] = available
-            entry["results"] = results
-            entry["facets"] = self._category_facets(html)
-            dirty = True
-
-            reachable = sum(
-                min(int(f["qty"]), _MAX_LISTING_PAGES * self.listing_page_size)
-                for f in entry["facets"]
-            ) or min(results, _MAX_LISTING_PAGES * self.listing_page_size)
-            notes.append(
-                f"John Lewis lists {results} {brand} products; "
-                f"crawling {len(entry['facets'])} category facets reaches "
-                f"about {min(reachable, results)}"
-            )
-
-        if dirty:
-            self._save_cached_codes(cache)
-        return notes
 
     def brand_codes(self, brands: Sequence[str], resolve: bool = False) -> Dict[str, str]:
         """Just the page codes, for callers that do not need the slug."""
@@ -526,54 +464,41 @@ class JohnLewisAdapter(RetailerAdapter):
     def product_listing_urls(
         self, brand: str, categories: Sequence[str], max_pages: int
     ) -> List[ListingPage]:
-        """Paginated brand landing pages.
+        """The first page of the brand's listing. `more_listing_pages` adds the rest.
 
         The category is not applied here: John Lewis states it on the product
         page itself, so filtering happens at extraction instead of by choosing
-        a different listing. That keeps one product page as the single source
-        of that fact.
+        a different listing.
         """
         page = self.brand_pages([brand]).get(self._brand_slug(brand))
         if not page:
             return []
-
-        # The brand page serves two pages and no more, whatever `pagesAvailable`
-        # claims, so depth alone cannot reach the catalogue. `prepare` records
-        # John Lewis's own Category facets, whose counts partition it exactly;
-        # each is crawled as its own listing and carries the category with it.
-        facets = page.get("facets") or []
-        depth = min(max(max_pages, 1), _MAX_LISTING_PAGES)
-
         # John Lewis's own slug, not ours: Estee Lauder's page is
         # /brand/est%C3%A9e-lauder/, and /brand/estee-lauder/ is a 404.
-        base = f"https://{self.domain}/brand/{page['slug']}/_/N-{page['code']}"
+        return [ListingPage(
+            url=f"https://{self.domain}/brand/{page['slug']}/_/N-{page['code']}",
+            brand=brand,
+        )]
 
-        listings: List[ListingPage] = []
+    def more_listing_pages(self, response, meta: dict, added: int) -> List[str]:
+        """Every other page of a brand listing, read off its first page.
 
-        def add(url: str, category: Optional[str], count: int) -> None:
-            listings.append(ListingPage(url=url, brand=brand, category=category))
-            # Only ask for pages that can hold something.
-            needed = -(-count // self.listing_page_size) if count else depth
-            for index in range(2, min(max(needed, 1), depth) + 1):
-                listings.append(ListingPage(
-                    url=f"{url}?page={index}", brand=brand, category=category
-                ))
-
-        # The brand root first: it is the only listing when facets are
-        # unknown, and its first pages are the most-promoted products.
-        add(base, None, depth * self.listing_page_size)
-
-        for facet in facets:
-            url = facet.get("url") or ""
-            if not url.startswith("/"):
-                continue
-            try:
-                count = int(facet.get("qty") or 0)
-            except (TypeError, ValueError):
-                count = 0
-            add(f"https://{self.domain}{url}", facet.get("label"), count)
-
-        return listings
+        The first page states `"results":234,"pagesAvailable":4`. Pages hold
+        72 products, and asking for the page after the last returns 404.
+        Walking to `pagesAvailable` collected every product for all seven
+        brands on 15 Sep 2026, e.g. Clinique 234 of 234 and Jo Malone 294 of
+        294. The total is kept, so a run that falls short is reported.
+        """
+        requested = meta.get("url") or str(response.url)
+        if "?" in requested:
+            return []  # only the first page adds pages
+        size = _LISTING_SIZE_RE.search(response.html_content or "")
+        if not size:
+            return []
+        results, available = int(size.group(1)), int(size.group(2))
+        if meta.get("brand"):
+            self._stated_results[self._brand_slug(meta["brand"])] = results
+        return [f"{requested}?page={n}" for n in range(2, available + 1)]
 
     def campaign_seed_urls(self, brands: Sequence[str]) -> List[str]:
         """None -- the brand listing already carries the campaigns.
@@ -774,46 +699,6 @@ class JohnLewisAdapter(RetailerAdapter):
         seen = {(v.get("differentiators") or {}).get("size") for v in sized}
         return sized if len(seen) == len(sized) else []
 
-    @staticmethod
-    def _category_facets(html: str) -> List[Dict[str, str]]:
-        """John Lewis's own category breakdown of a brand listing.
-
-        The brand page itself only serves two pages -- 48 products -- however
-        many it says are available, and `?page=3` is a 404. What it does
-        publish is a Category facet whose counts partition the catalogue
-        exactly: Jo Malone's twenty facets sum to 292, its stated total. Each
-        facet is its own listing, so crawling them reaches the products the
-        brand page will not hand over, and tags each one with the category
-        John Lewis filed it under.
-        """
-        match = _NEXT_DATA_RE.search(html or "")
-        if not match:
-            return []
-        try:
-            data = json.loads(match.group(1))
-        except (ValueError, TypeError):
-            return []
-
-        listing = (
-            data.get("props", {}).get("pageProps", {})
-                .get("productListingData", {})
-        )
-        facets: List[Dict[str, str]] = []
-        for group in listing.get("facets") or []:
-            if not isinstance(group, dict) or group.get("name") != "Category":
-                continue
-            for detail in group.get("details") or []:
-                url = detail.get("facetUrl")
-                label = clean_text(detail.get("label"))
-                if not url or not label:
-                    continue
-                facets.append({
-                    "url": url,
-                    "label": label,
-                    "qty": str(detail.get("qty") or 0),
-                })
-        return facets
-
     @classmethod
     def _page_state(cls, response) -> Dict[str, Any]:
         """The page's `__NEXT_DATA__`, or an empty dict."""
@@ -954,7 +839,7 @@ class JohnLewisAdapter(RetailerAdapter):
             category=self._category(block),
             # A from-price covers several sizes, so this page is not a
             # single-variant listing and must not be validated as one.
-            variant_count=None if price_is_from else 1,
+            variant_count=None if price_is_from else (block.get("shade_count") or 1),
             price_is_from=price_is_from,
             # John Lewis numbers pages (p47865) and stock units (230631076)
             # separately, so these two identifiers never match by design.
@@ -1033,20 +918,88 @@ class JohnLewisAdapter(RetailerAdapter):
         return None
 
     def campaign_discovery_urls(self) -> List[str]:
-        """John Lewis's offers browse page and its offers content hub.
+        """John Lewis's "Sale & Offers" page, linked from its homepage.
 
-        Its promotions are otherwise stated per product ("Price matched:
-        save 15%"), which a campaigns-only run never reaches because it
-        fetches no products.
+        The two pages used before, /browse/offers/_/N-7ofb and
+        /content/offers, list no offers any more: on 15 Sep 2026 the first
+        stated 0 results. The rest are found from this page's links, see
+        `offer_page_links`.
         """
-        return [
-        "https://www.johnlewis.com/browse/offers/_/N-7ofb",
-        "https://www.johnlewis.com/content/offers",
-        ]
+        return ["https://www.johnlewis.com/special-offers/c50000110"]
 
     def extract_campaign_directory(self, response) -> List[Campaign]:
-        """Every offer linked from a hub page, via the shared scan."""
+        """Every offer linked from an offers page, via the shared scan."""
         return self._scan_offer_links(response)
+
+    def offer_page_links(self, response) -> List[str]:
+        """Offers pages to read after this one, limited to the requested brands.
+
+        Following every /special-offers/ link walked the whole shop: a run for
+        Bobbi Brown and Too Faced spent 272 of 435 requests on furniture and
+        other departments' offers, and John Lewis answered 403 from then on.
+        Following every link from pages that list a requested brand was still
+        too wide: inside beauty it walked every filtered view (lipsticks,
+        foundations, perfumes), 80 pages with 95 more queued. Those views add
+        no campaigns. A product's own offers come from its product page.
+
+        So a link is followed when one of these holds:
+
+          * this is the Sale & Offers page: every department's offers page
+          * this is a department's offers page listing a requested brand's
+            product: every offer it links, read once
+          * the link names a requested brand, e.g. "15% off Bobbi Brown"
+
+        An offer is read past its first page (?page=N, up to its stated
+        `pagesAvailable`) only when its own URL names a requested brand, so
+        all of its products are known.
+        """
+        url = str(response.url)
+        page = url.split("?")[0].rstrip("/")
+        hubs = {u.rstrip("/") for u in self.campaign_discovery_urls()}
+        # unknown pages get the strictest rule; a redirect lands here too
+        depth = 0 if page in hubs else self._offer_depth.get(page, 2)
+
+        lists_ours = any(self._names_wanted_brand(link)
+                         for link in self.extract_product_links(response))
+        follow_all = depth == 0 or (depth == 1 and lists_ours)
+
+        links = []
+        for node in response.css("a"):
+            href = (node.attrib.get("href") or "").split("#")[0].split("?")[0].rstrip("/")
+            if href.startswith("/"):
+                href = f"https://{self.domain}{href}"
+            path = href[len(f"https://{self.domain}"):] if href.startswith(f"https://{self.domain}/") else ""
+            if not path.startswith(("/special-offers/", "/browse/special-offers/")):
+                continue
+            if follow_all or self._names_wanted_brand(href, clean_text(node.get_all_text()) or ""):
+                links.append(href)
+                self._offer_depth[href] = min(self._offer_depth.get(href, depth + 1), depth + 1)
+
+        size = _LISTING_SIZE_RE.search(response.html_content or "")
+        if "?" not in url and size and self._names_wanted_brand(page):
+            links += [f"{url}?page={n}" for n in range(2, int(size.group(2)) + 1)]
+
+        return list(dict.fromkeys(links))
+
+    def _names_wanted_brand(self, *texts: str) -> bool:
+        """True when a URL or link text names one of the requested brands.
+
+        Accents and percent-encoding are folded first, so "Estée Lauder" and
+        /est%C3%A9e-lauder/ both match estee-lauder. Whole words only, so MAC
+        does not match /macadamia-oil/.
+        """
+        words = re.sub(r"[^a-z0-9]+", " ", " ".join(self._fold_slug(t) for t in texts))
+        return any(re.search(rf"(?<![a-z0-9]){slug.replace('-', ' ')}(?![a-z0-9])", words)
+                   for slug in self._wanted_slugs)
+
+    def offer_page_products(self, response) -> List[str]:
+        """Ids of the products an offers listing shows.
+
+        John Lewis offers listings carry no recommendation carousels: the
+        Bobbi Brown offer states 44 results and links exactly 44 products.
+        """
+        return [pid for pid in (self.product_id_from_url(u)
+                                for u in self.extract_product_links(response)) if pid]
 
     def extract_campaigns(self, response) -> List[Campaign]:
         """Promotions stated on this page.
@@ -1128,7 +1081,16 @@ class JohnLewisAdapter(RetailerAdapter):
 
     @staticmethod
     def _product_json_ld(response) -> Optional[Dict[str, Any]]:
-        """The page's JSON-LD Product block, if it has one."""
+        """The page's JSON-LD product, as one Product block.
+
+        A product sold in shades is published as a `ProductGroup` instead:
+        brand, name and category on the group, each shade's price and sku in
+        `hasVariant`. It is read as one product, the shade on this page
+        supplying the offer, because every other retailer lists a multi-shade
+        product once. Reading only `Product` dropped every shade product --
+        all six MAC products in a sample, and most makeup.
+        """
+        items = []
         for node in response.css('script[type="application/ld+json"]'):
             # `.text` not `.get_all_text()`: the latter returns empty for a
             # script element, since it collects rendered text.
@@ -1139,9 +1101,20 @@ class JohnLewisAdapter(RetailerAdapter):
                 data = json.loads(raw.strip())
             except (ValueError, TypeError):
                 continue
-            for item in data if isinstance(data, list) else [data]:
-                if isinstance(item, dict) and item.get("@type") == "Product":
-                    return item
+            items += [i for i in (data if isinstance(data, list) else [data]) if isinstance(i, dict)]
+
+        for item in items:
+            if item.get("@type") == "Product":
+                return item
+
+        for group in items:
+            if group.get("@type") != "ProductGroup":
+                continue
+            shades = [v for v in group.get("hasVariant") or [] if isinstance(v, dict)]
+            page = canonical_url(str(response.url))
+            this_shade = next((v for v in shades if canonical_url(v.get("url") or "") == page),
+                              shades[0] if shades else {})
+            return {**group, "offers": this_shade.get("offers"), "shade_count": len(shades)}
         return None
 
     def looks_blocked(self, response) -> bool:

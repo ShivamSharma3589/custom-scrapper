@@ -136,8 +136,127 @@ def run() -> int:
         failures += 0 if ok else 1
         print(f"  {'ok  ' if ok else 'FAIL'} {name[:38]:40} -> {got!r}")
 
+    failures += offer_page_checks()
+
     print(f"\n{'ALL CHECKS PASSED' if failures == 0 else f'{failures} CHECK(S) FAILED'}")
     return 1 if failures else 0
+
+
+def offer_page_checks() -> int:
+    """Offers pages: their heading, their own products, and the pages after them.
+
+    A run used to read 2 of the 57 offer pages Lookfantastic lists, and never
+    tied an offer to the products it covers. "15% Off Selected | Use Code:
+    TREAT" lists Clinique products whose own pages only mention code SAVE.
+    """
+    from retailscraper.models import SCOPE_SITEWIDE, Campaign, Product
+    from retailscraper.spider import RetailPromotionSpider
+
+    failures = 0
+
+    def check(label, ok, detail=""):
+        nonlocal failures
+        failures += 0 if ok else 1
+        print(f"  {'ok  ' if ok else 'FAIL'} {label}" + (f"  {detail}" if not ok else ""))
+
+    adapter = LookfantasticAdapter()
+    offer_url = "https://www.lookfantastic.com/c/offers/tiered/email/4/"
+    page_one = Selector(url=offer_url, content="""<html><body>
+        <a class="strip-banner" href="/c/offers/tiered/">UP TO 20% OFF SELECTED BEAUTY | USE CODE: SAVE</a>
+        <a href="/c/offers/auto/save-25/">25% Off</a>
+        <h1>15% Off Selected | Use Code: TREAT</h1>
+        <div id="product-list">
+          <a href="/p/clinique-take-the-day-off-cleansing-balm-125ml/11144730/">balm</a>
+          <a href="/p/clinique-take-the-day-off-cleansing-balm-125ml/11144730/">balm again</a>
+          <a href="/p/clinique-moisture-surge-100-hour-50ml/12959012/">surge</a>
+          <a href="/p/tom-ford-taormina-orange-eau-de-parfum-50ml/17784989/">New Taormina Orange 20% off</a>
+        </div>
+        <a href="/p/some-recommended-thing/10000001/">you may also like</a>
+        <a href="/c/offers/tiered/email/4/?pageNumber=2">2</a>
+    </body></html>""")
+
+    print("\n=== an offers page: its heading is its offer ===")
+    campaigns = adapter.extract_campaign_directory(page_one)
+    texts = [c.promotion_text for c in campaigns]
+    heading = next((c for c in campaigns if c.promotion_text.startswith("15% Off Selected")), None)
+    check("the heading becomes a campaign", heading is not None, texts)
+    check("landing on its own page, so its product list decides",
+          heading is not None and heading.landing_url == offer_url)
+    check("a shop-by-saving filter is not a campaign", "25% Off" not in texts, texts)
+    check("a product tile is not a campaign",
+          not any("Taormina" in t for t in texts), texts)
+    sale = Selector(url="https://www.lookfantastic.com/c/brands/mac/sale/",
+                    content="<html><body><h1>MAC Cosmetics Sale</h1></body></html>")
+    mac = [c for c in adapter.extract_campaign_directory(sale) if c.promotion_text == "MAC Cosmetics Sale"]
+    check("'MAC Cosmetics Sale' counts, though it names no discount", len(mac) == 1)
+    check("and is scoped to the brand",
+          bool(mac) and (mac[0].scope, mac[0].scope_value) == ("brand", "Mac"),
+          mac and (mac[0].scope, mac[0].scope_value))
+    faqs = Selector(url="https://www.lookfantastic.com/c/offers/charity-donation/faqs/",
+                    content="<html><body><h1>FAQs</h1></body></html>")
+    check("a heading that is not an offer is ignored", adapter.extract_campaign_directory(faqs) == [])
+
+    print("\n=== an offers page: only its grid counts as its products ===")
+    ids = adapter.offer_page_products(page_one)
+    check("grid products, once each, recommendations left out",
+          ids == ["11144730", "12959012", "17784989"], ids)
+
+    print("\n=== an offers page: what to read next ===")
+    links = adapter.offer_page_links(page_one)
+    check("the next page, while the grid has products",
+          offer_url + "?pageNumber=2" in links, links)
+    check("the landing page of each offer linked",
+          "https://www.lookfantastic.com/c/offers/tiered/" in links, links)
+    check("not the shop-by-saving filter pages",
+          not any("/offers/auto/" in u for u in links), links)
+    check("not product pages", not any("/p/" in u for u in links), links)
+    empty_last = Selector(url=offer_url + "?pageNumber=9", content="""<html><body>
+        <div id="product-list"></div><a href="?pageNumber=10">10</a></body></html>""")
+    check("an empty grid ends the offer",
+          not any("pageNumber=10" in u for u in adapter.offer_page_links(empty_last)))
+    no_next = Selector(url=offer_url + "?pageNumber=2", content="""<html><body>
+        <div id="product-list"><a href="/p/x/12345678/">x</a></div>
+        <a href="?pageNumber=1">1</a><a href="?pageNumber=12">12</a></body></html>""")
+    check("page 2 linking only 1 and 12 does not queue page 3",
+          not any("pageNumber=3" in u for u in adapter.offer_page_links(no_next)))
+
+    print("\n=== an offer attaches to the products its page lists ===")
+    spider = RetailPromotionSpider(adapter=adapter, brands=["Clinique"])
+
+    def product(pid):
+        return Product(retailer="Lookfantastic", brand="Clinique", brand_verified_by="breadcrumb_link",
+                       product_id=pid, product_title=f"Clinique {pid}",
+                       product_url=f"https://www.lookfantastic.com/p/x/{pid}/",
+                       source_url=f"https://www.lookfantastic.com/p/x/{pid}/",
+                       current_price=10.0, currency="GBP", scraped_at="2026-09-15T00:00:00+00:00")
+
+    listed, unlisted = product("11144730"), product("99999999")
+    for item in (listed, unlisted):
+        spider.products[item.product_id] = item
+    treat = heading
+    selected = Campaign(retailer="Lookfantastic", promotion_text="UP TO 20% OFF SELECTED BEAUTY | USE CODE: SAVE",
+                        promotion_type="code_discount", scope=SCOPE_SITEWIDE,
+                        source_url=offer_url, landing_url="https://www.lookfantastic.com/c/offers/tiered/")
+    everywhere = Campaign(retailer="Lookfantastic", promotion_text="Free delivery weekend 20% off",
+                          promotion_type="percentage_discount", scope=SCOPE_SITEWIDE,
+                          source_url=offer_url, landing_url="https://www.lookfantastic.com/c/never-read/")
+    for item in (treat, selected, everywhere):
+        spider.campaigns[item.campaign_id] = item
+
+    # both pages of the TREAT offer list the balm; the tiered page lists nothing of ours
+    spider.offer_members["https://www.lookfantastic.com/c/offers/tiered/email/4"] = {"11144730", "12959012"}
+    spider.offer_members["https://www.lookfantastic.com/c/offers/tiered"] = {"55555555"}
+    spider.apply_campaigns()
+
+    check("TREAT reaches the product its page lists", treat.campaign_id in listed.applied_campaigns)
+    check("and not one it does not list", treat.campaign_id not in unlisted.applied_campaigns)
+    check("a 'site-wide' offer whose page was read goes only where that page says",
+          selected.campaign_id not in listed.applied_campaigns)
+    check("a site-wide offer whose page was not read still applies everywhere",
+          everywhere.campaign_id in listed.applied_campaigns
+          and everywhere.campaign_id in unlisted.applied_campaigns)
+
+    return failures
 
 
 if __name__ == "__main__":

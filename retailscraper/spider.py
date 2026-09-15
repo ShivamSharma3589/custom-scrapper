@@ -126,6 +126,10 @@ class RetailPromotionSpider(SitemapSpider):
         # carrying two offers gets both, not neither
         self._page_offers: Dict[str, List[str]] = {}
 
+        # offers page (URL without its page number) -> ids of the products it
+        # lists. A campaign landing on that page applies to exactly these.
+        self.offer_members: Dict[str, set] = {}
+
         super().__init__(crawldir=crawldir)
 
     # --- crawl entry points ----------------------------------------------
@@ -482,9 +486,15 @@ class RetailPromotionSpider(SitemapSpider):
         for campaign in self.adapter.extract_campaigns(response):
             self._record_campaign(campaign)
 
+        # the products this offers page lists, so its offer can be attached
+        # to exactly those. Every page of a paged offer adds to the same set.
+        members = self.adapter.offer_page_products(response)
+        if members:
+            self.offer_members.setdefault(_page_key(str(response.url)), set()).update(members)
+
         self.logger.info(
             f"campaign directory: {len(self.campaigns)} campaign(s) known "
-            f"after {response.url}"
+            f"after {response.url} ({len(members)} product(s) listed)"
         )
 
         # other offers pages this one links to. The crawler skips any URL it
@@ -618,7 +628,12 @@ class RetailPromotionSpider(SitemapSpider):
     def _campaigns_for(self, product: Product) -> List[str]:
         """Ids of the campaigns that apply to this product.
 
-        A campaign qualifies when:
+        When the campaign's own offers page was read, that page's product list
+        decides: the campaign applies to the products it lists and nothing
+        else, even if it is labelled site-wide. "Up to 20% off selected
+        beauty" is not on every product.
+
+        Otherwise a campaign qualifies when:
           * it is site-wide, so it applies everywhere
           * the product's own page showed it
           * its text matches the product's promotional copy exactly
@@ -631,9 +646,18 @@ class RetailPromotionSpider(SitemapSpider):
         shown = self._page_offers.get(product.product_id, [])
         shown_text = {_plain(self.campaigns[cid].promotion_text)
                       for cid in shown if cid in self.campaigns}
+        # an offers page lists page ids; a size split out of a page has its
+        # own id, so the page's id is read back from the product's URL
+        ids = {product.product_id, self.adapter.product_id_from_url(product.product_url or "")}
 
         applicable = []
         for campaign in self.campaigns.values():
+            members = self.offer_members.get(_page_key(campaign.landing_url or ""))
+            if members is not None:
+                if ids & members:
+                    applicable.append(campaign.campaign_id)
+                continue
+
             key = self.adapter.promotion_key(campaign)
             if (campaign.scope == SCOPE_SITEWIDE
                     or campaign.campaign_id in shown
@@ -647,3 +671,9 @@ class RetailPromotionSpider(SitemapSpider):
 def _plain(text: str) -> str:
     """Text compared loosely: case and spacing ignored."""
     return " ".join(text.split()).casefold()
+
+
+def _page_key(url: str) -> str:
+    """A page's address without query or fragment, so page 1 and page 7 of
+    one offer share a key: .../offers/tiered/?pageNumber=7 -> .../offers/tiered/"""
+    return url.split("#")[0].split("?")[0].rstrip("/").lower()
