@@ -103,7 +103,7 @@
   <header class="prose">
     <p class="eyebrow">Field guide</p>
     <h1>Promotion scraper field guide</h1>
-    <p class="lede">Everything the scraper can do today, and the command for each. Seven retailers, four tools, thirteen test suites.</p>
+    <p class="lede">Everything the scraper can do today, and the command for each.</p>
   </header>
 
   <hr>
@@ -121,12 +121,10 @@ python run.py --retailer lookfantastic --brands Clinique --max-products 15
 
 # 3. Everything a site is promoting, no brands needed
 python run.py --retailer boots --campaigns-only
-
-# 4. Check nothing is broken before you change anything
-python run_tests.py -q</code></pre>
+</code></pre>
 
   <div class="callout">
-    <strong>Two habits worth keeping.</strong> Add <code>--cache-dir .cache</code> while experimenting so re-runs cost the retailer nothing, and drop it for real runs so prices are live. Add <code>--archive</code> to any run you might want to compare against later — without it, change tracking has nothing to diff.
+    <strong>A habit worth keeping.</strong> Add <code>--cache-dir .cache</code> while experimenting so re-runs cost the retailer nothing, and drop it for real runs so prices are live.
   </div>
 
   <div class="callout">
@@ -146,10 +144,7 @@ python run_tests.py -q</code></pre>
       </thead>
       <tbody>
         <tr><td class="mono nowrap">run.py</td><td>What is this retailer charging and promoting for our brands?</td></tr>
-        <tr><td class="mono nowrap">compare.py</td><td>Where does one retailer undercut another on the same product?</td></tr>
-        <tr><td class="mono nowrap">changes.py</td><td>What moved between two runs — prices, offers started and ended?</td></tr>
         <tr><td class="mono nowrap">spotcheck.py</td><td>Does a record actually match the live page?</td></tr>
-        <tr><td class="mono nowrap">run_tests.py</td><td>Did I break anything? (13 suites, 356 checks, no network)</td></tr>
       </tbody>
     </table>
   </div>
@@ -165,32 +160,14 @@ python run_tests.py -q</code></pre>
     <div class="recipe">
       <span class="ask">Which of our brands is Look Fantastic discounting right now?</span>
       <pre><code>python run.py --retailer lookfantastic \
-    --brands Clinique MAC "Tom Ford" "Jo Malone" "Estee Lauder" \
-    --archive</code></pre>
-      <span class="note">Open the per-brand CSVs in <code>output/</code>. <code>--archive</code> keeps a timestamped copy so you can diff against it later.</span>
+    --brands Clinique MAC "Tom Ford" "Jo Malone" "Estee Lauder"</code></pre>
+      <span class="note">Open the per-brand CSVs in <code>output/</code>. Every run is timestamped, so an earlier one is always there to compare against.</span>
     </div>
 
     <div class="recipe">
       <span class="ask">What campaigns is a competitor running site-wide?</span>
       <pre><code>python run.py --retailer lookfantastic --campaigns-only</code></pre>
       <span class="note">No brands needed. Returns every promotion on the offers hub with its landing page and an honest scope. Works for Look Fantastic and Boots; John Lewis has no central offers hub, so it refuses rather than returning an empty file.</span>
-    </div>
-
-    <div class="recipe">
-      <span class="ask">Who is cheapest on the same product?</span>
-      <pre><code>python run.py --retailer lookfantastic --brands Clinique --out-dir output/compare
-python run.py --retailer boots        --brands Clinique --out-dir output/compare
-python run.py --retailer johnlewis    --brands Clinique --out-dir output/compare
-
-python compare.py output/compare/*.json</code></pre>
-      <span class="note">Matches products across retailers by title and size, then reports the price gap. Raise <code>--threshold</code> for stricter matching.</span>
-    </div>
-
-    <div class="recipe">
-      <span class="ask">What changed since last week?</span>
-      <pre><code>python run.py --retailer boots --brands Clinique --archive   # do this weekly
-python changes.py --latest --retailer boots</code></pre>
-      <span class="note">Reports price moves, discounts started and ended, and products that appeared or vanished. Needs at least two archived runs.</span>
     </div>
 
     <div class="recipe">
@@ -202,10 +179,9 @@ python changes.py --latest --retailer boots</code></pre>
 
     <div class="recipe">
       <span class="ask">Prepare for Black Friday</span>
-      <pre><code>python run.py --retailer boots --brands Clinique --archive        # baseline now
-python run.py --retailer boots --brands Clinique --archive \
-    --offer-keywords keywords/black-friday.txt                    # on the day
-python changes.py --latest --retailer boots</code></pre>
+      <pre><code>python run.py --retailer boots --brands Clinique                  # baseline now
+python run.py --retailer boots --brands Clinique \
+    --offer-keywords keywords/black-friday.txt                    # on the day</code></pre>
       <span class="note">A keyword file <strong>replaces</strong> the built-in offer rules, so <code>black-friday.txt</code> deliberately re-includes everyday retail wording. Edit the file directly — no code changes.</span>
     </div>
 
@@ -242,7 +218,6 @@ python changes.py --latest --retailer boots</code></pre>
         <tr><td class="mono nowrap">--offer-keywords</td><td>A keyword file that <strong>replaces</strong> the built-in offer rules</td></tr>
         <tr><td class="mono nowrap">--max-products</td><td>Cap per brand. For demos — omit for a full pass</td></tr>
         <tr><td class="mono nowrap">--strict-brand</td><td>Structured-data brand evidence only</td></tr>
-        <tr><td class="mono nowrap">--archive</td><td>Keep a timestamped copy under <code>output/history/</code> for change tracking</td></tr>
         <tr><td class="mono nowrap">--cache-dir</td><td>Cache responses so re-runs cost no requests</td></tr>
         <tr><td class="mono nowrap">--crawl-dir</td><td>Checkpoint, so an interrupted run resumes</td></tr>
         <tr><td class="mono nowrap">--out-dir</td><td>Where results go (default: <code>output/</code> next to the script)</td></tr>
@@ -371,8 +346,8 @@ python changes.py --latest --retailer boots</code></pre>
 
   <section class="prose">
     <h2>Before you change anything</h2>
-    <pre><code>.venv\Scripts\python.exe run_tests.py -q</code></pre>
-    <p>Thirteen suites and 356 checks, no network, a few seconds. They run against captured real pages, so they catch extraction drift as well as logic errors. Green before you start and green after you finish means you didn't break what was working.</p>
+    <pre><code>.venv\Scripts\python.exe run.py --retailer boots --brands Clinique --max-products 15</code></pre>
+    <p>There is no test suite. The check is a small real run: one brand, a handful of products, a minute or two. Do it before you start and again after you finish, and compare the two output files. Then open a few of the scraped URLs in a browser and read the prices back, or use <code>spotcheck.py</code>, which does the same for a random sample.</p>
   </section>
 
 </div>

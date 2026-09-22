@@ -1,13 +1,4 @@
-"""Fetch specific product pages live and print what we extract from each.
-
-This exists for manual verification: open the same URL in a browser and
-compare the fields side by side. Checking a sample against the live site is
-the only way to catch extraction that is confidently wrong, which no amount
-of internal validation can do on its own.
-
-    python spotcheck.py --retailer lookfantastic --urls URL [URL ...]
-    python spotcheck.py --retailer lookfantastic --from-output output/lf.json --sample 10
-"""
+"""Fetch specific product pages live and print what we extract from each."""
 
 import argparse
 import json
@@ -15,7 +6,6 @@ import random
 import sys
 from pathlib import Path
 
-# Importable from any working directory (see run.py).
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from scrapling.fetchers import Fetcher  # noqa: E402
@@ -52,8 +42,6 @@ def collect_urls(args) -> list:
         with args.from_output.open(encoding="utf-8") as handle:
             payload = json.load(handle)
         urls = [p["product_url"] for p in payload.get("products", [])]
-        # A random sample beats the first N: the first N share whatever
-        # ordering the sitemap has, so they tend to be the same kind of page.
         return random.sample(urls, min(args.sample, len(urls)))
 
     return []
@@ -78,14 +66,6 @@ def main(argv=None) -> int:
             print("    could not fetch\n")
             continue
 
-        # `extract_product` is the adapter contract. This used to call
-        # `parse_product`, which only Lookfantastic still has, so the one tool
-        # built to catch confidently-wrong extraction raised AttributeError on
-        # the other seven retailers -- the check most worth having was the
-        # check that could not run.
-        #
-        # Brands are passed through because an adapter may use them for
-        # last-resort corroboration on a page with no structured brand.
         products = adapter.extract_product_variants(response, args.brands)
         if not products:
             single = adapter.extract_product(response, args.brands)

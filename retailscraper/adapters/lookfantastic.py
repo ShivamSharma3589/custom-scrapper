@@ -1,29 +1,4 @@
-"""Lookfantastic adapter.
-
-Product pages (`/p/<slug>/<id>/`) carry two JSON-LD blocks:
-
-  * the product, whose @type states the variant situation:
-      `Product`      - one variant, with `sku` and `offers`
-      `ProductGroup` - many variants, with `hasVariant` and a null `offers`
-  * a `BreadcrumbList` whose `/c/brands/<slug>/` link is the retailer's own
-    brand taxonomy. That link -- not the URL slug, not the title -- is what
-    proves the brand.
-
-Prices for discounted items are NOT in the JSON-LD, so they come from
-`#product-price`, where screen-reader labels ("Recommended Retail Price:",
-"Current price:") say which number is which. Those labels are far more
-stable than the utility CSS classes around them.
-
-Promotions sit in two distinct places, which is what separates a product's
-own offer from a site-wide one without guessing:
-
-  * `#pap-banner` / `[data-track="promoClick"]` - applies to THIS product
-  * `a.strip-banner` - the header strip shown on every page, so site-wide
-
-Lookfantastic also truncates some names in its structured data ("Clinique
-Anti" for Anti-Blemish Solutions), so a title is repaired from the page's
-own `<h1>` when the JSON-LD name is a strict prefix of it.
-"""
+"""Lookfantastic adapter."""
 
 import json
 import re
@@ -50,15 +25,10 @@ from ..normalize import (
 from ..promotions import classify_promotion, looks_like_offer
 from .base import ListingPage, RetailerAdapter, register
 
-# `/p/<slug>/<numeric id>/` -- the trailing number is Lookfantastic's stable
-# product id and is what we use for identity and deduplication. The same
-# product is reachable under several slugs, but the id does not change.
 _PRODUCT_URL_RE = re.compile(r"/p/(?:[^/]+/)*?([0-9]{5,})/?$")
 
-# A brand landing page: exactly one path segment under /c/brands/.
 _BRAND_PAGE_RE = re.compile(r"/c/brands/([^/]+)/?$")
 
-# "Save £9.75" and "( 25% Off )" inside the price block.
 _SAVE_AMOUNT_RE = re.compile(r"Save\s*[£$€]?\s*([\d.,]+)", re.IGNORECASE)
 _SAVE_PERCENT_RE = re.compile(r"\(\s*([\d.]+)\s*%\s*Off\s*\)", re.IGNORECASE)
 
@@ -71,20 +41,10 @@ class LookfantasticAdapter(RetailerAdapter):
     domain = "www.lookfantastic.com"
     display_name = "Lookfantastic"
 
-    # Category pages exist at /c/brands/<brand>/<category>/ and are the only
-    # place Lookfantastic states a product's category: the product page itself
-    # carries no category taxonomy at all (every "Skincare" on it is site
-    # navigation or another brand's name).
     supports_categories = True
 
-    # Those category pages render their grid with JavaScript, so listings need
-    # a browser -- while product pages are plain HTML and do not. Splitting the
-    # sessions means we pay for a browser on a handful of listing pages
-    # instead of on every product.
     listing_session_id = "browser"
 
-    #: Category slugs as Lookfantastic spells them, keyed by the general name
-    #: a user is likely to type. Anything not in here is passed through as-is.
     CATEGORY_SLUGS = {
         "skincare": "skincare",
         "makeup": "makeup",
@@ -100,12 +60,7 @@ class LookfantasticAdapter(RetailerAdapter):
     }
 
     def configure_session(self, manager) -> None:
-        """Plain HTTP by default, plus a lazily-started browser for listings.
-
-        The browser session is marked lazy so it is only launched if a
-        category crawl actually needs it -- a sitemap-driven run never pays
-        the startup cost.
-        """
+        """Plain HTTP by default, plus a lazily-started browser for listings."""
         from scrapling.fetchers import AsyncDynamicSession, FetcherSession
 
         manager.add("default", FetcherSession(), default=True)
@@ -118,11 +73,7 @@ class LookfantasticAdapter(RetailerAdapter):
     def product_listing_urls(
         self, brand: str, categories: Sequence[str], max_pages: int
     ) -> List[ListingPage]:
-        """Category pages for one brand.
-
-        Only used when a category filter is in play. Without one, the sitemap
-        is a far cheaper and more complete route.
-        """
+        """Category pages for one brand."""
         if not categories:
             return []
 
@@ -142,12 +93,7 @@ class LookfantasticAdapter(RetailerAdapter):
         return pages
 
     def extract_product_links(self, response, brand: Optional[str] = None) -> List[str]:
-        """Product URLs from a rendered category page.
-
-        Filtered on the brand slug to skip the cross-sell carousels above the
-        grid, which would otherwise eat the crawl budget. A cost control, not
-        verification -- the brand is still proved from each product page.
-        """
+        """Product URLs from a rendered category page."""
         slug = self._brand_slug(brand) if brand else None
         found = []
         for node in response.css("a"):
@@ -163,12 +109,6 @@ class LookfantasticAdapter(RetailerAdapter):
                 found.append(clean)
         return found
 
-    # Product discovery comes from the sitemap declared in robots.txt. This is
-    # deliberate: the brand landing pages render their grid with JavaScript, so
-    # a static fetch of /c/brands/clinique/ yields only a handful of carousel
-    # items mixed with beauty boxes and gift vouchers. The sitemap gives the
-    # complete catalogue in one request, and is published by the retailer for
-    # exactly this purpose.
     sitemap_urls = ["https://www.lookfantastic.com/sitemapindex-product.xml.gz"]
 
     def campaign_seed_urls(self, brands: Sequence[str]) -> List[str]:
@@ -183,24 +123,15 @@ class LookfantasticAdapter(RetailerAdapter):
         """Turn a brand name into the slug Lookfantastic uses in its URLs."""
         return re.sub(r"[^a-z0-9]+", "-", brand.strip().lower()).strip("-")
 
-    # --- discovery --------------------------------------------------------
-
     def product_id_from_url(self, url: str) -> Optional[str]:
-        """Public form of the id helper, used to join sitemap-discovered
-        products to the category listings they also appear on."""
+        """Public form of the id helper, for joining sitemap URLs to scraped products."""
         return self._product_id_from_url(url)
 
     def is_product_url(self, url: str) -> bool:
         return bool(_PRODUCT_URL_RE.search(url.split("?")[0]))
 
     def select_candidates(self, urls: Iterable[str], brands: Sequence[str]) -> List[str]:
-        """Pick sitemap URLs whose slug mentions one of the target brands.
-
-        This is only a cheap pre-filter so we do not fetch all 16,000 products
-        to find one brand's few hundred. It is NOT brand verification -- the
-        brand is proved from the breadcrumb on each product page, and any
-        candidate that turns out to belong to another brand is rejected there.
-        """
+        """Pick sitemap URLs whose slug mentions one of the target brands."""
         slugs = [self._brand_slug(b) for b in brands]
         selected = []
         for url in urls:
@@ -211,23 +142,15 @@ class LookfantasticAdapter(RetailerAdapter):
                 selected.append(url)
         return selected
 
-    # --- product extraction ----------------------------------------------
-
     def extract_product(self, response, target_brands: Sequence[str] = ()) -> Optional[Product]:
         return self.parse_product(response, str(response.url), target_brands)
 
     def parse_product(self, sel, url: str, target_brands: Sequence[str] = ()) -> Optional[Product]:
-        """Build a Product from a parsed product page.
-
-        Split out from `extract_product` so it can be exercised against saved
-        HTML without a live request.
-        """
+        """Build a Product from a parsed product page."""
         blocks = self._json_ld_blocks(sel)
-        # A single-variant page is a `Product`; a shade/size range is a
-        # `ProductGroup`. Both describe one purchasable listing to us.
         product_ld = self._find_type(blocks, "Product") or self._find_type(blocks, "ProductGroup")
         if product_ld is None:
-            return None  # not a product page
+            return None
 
         product_id = self._product_id_from_url(url)
         if not product_id:
@@ -235,28 +158,15 @@ class LookfantasticAdapter(RetailerAdapter):
 
         brand, verified_by = self._verify_brand(blocks)
         if not brand:
-            # Some product pages ship a truncated breadcrumb ("Home > product")
-            # with no brand link at all, and carry no other machine-readable
-            # brand for themselves -- every /c/brands/ link on them is global
-            # navigation. Rejecting those loses genuine products, so fall back
-            # to requiring TWO independent retailer-authored signals to agree:
-            # the title must start with the brand AND the canonical URL slug
-            # must too. Either alone is untrustworthy, which is why neither is
-            # used alone. The weaker provenance is recorded distinctly so a
-            # consumer can filter it out (see --strict-brand).
             brand, verified_by = self._verify_brand_weakly(
                 clean_text(product_ld.get("name")), url, target_brands
             )
         variants = product_ld.get("hasVariant") or []
         variant_count = len(variants) if variants else 1
 
-        # Prices come from the rendered price block, which is the only place
-        # the RRP appears. The JSON-LD offer carries the current price only.
         original_price, current_price, currency = self._extract_prices(sel)
         saved_amount, stated_percent = self._extract_saving(sel)
 
-        # Fall back to the JSON-LD offer if the price block was unreadable, so
-        # a layout tweak degrades the record rather than losing it entirely.
         offer = product_ld.get("offers")
         if isinstance(offer, list):
             offer = offer[0] if offer else None
@@ -264,16 +174,10 @@ class LookfantasticAdapter(RetailerAdapter):
             current_price = self._as_float(offer.get("price"))
             currency = currency or offer.get("priceCurrency")
 
-        # For a multi-variant product there is no single meaningful SKU --
-        # reporting one shade's SKU would misrepresent a 33-shade foundation as
-        # one item. We report the group id instead and leave `sku` empty.
         sku = product_ld.get("sku") if variant_count == 1 else None
         if sku is None and variant_count == 1 and isinstance(offer, dict):
             sku = offer.get("sku")
 
-        # "https://schema.org/InStock" -> "InStock". A ProductGroup has no
-        # offer of its own, so a range counts as available when any one of its
-        # shades is in stock.
         availability = None
         if isinstance(offer, dict) and offer.get("availability"):
             availability = str(offer["availability"]).rsplit("/", 1)[-1]
@@ -314,39 +218,22 @@ class LookfantasticAdapter(RetailerAdapter):
             scraped_at=datetime.now(timezone.utc).isoformat(),
         )
 
-    # --- campaign extraction ---------------------------------------------
-
-    #: Where offer discovery starts. The rest are found two ways: `prepare`
-    #: reads every offer and sale page the shop's list sitemap names (57 on
-    #: 15 Sep 2026), and `offer_page_links` follows the offer links on each
-    #: page, which catches ones the sitemap misses, such as the seasonal sale.
     CAMPAIGN_HUB_PATHS = [
         "/c/health-beauty/offers/view-all/",
         "/c/health-beauty/offers/",
         "/c/offers/sale/",
     ]
 
-    #: The shop's own list of category and landing pages.
     OFFER_SITEMAP = "https://www.lookfantastic.com/sitemapindex-list.xml.gz"
 
-    #: Safety stop for one offer's pages. Real offers seen so far run to
-    #: about 20; this only guards against a page that never ends.
     MAX_OFFER_PAGES = 100
 
     def __init__(self) -> None:
-        #: Offer and sale pages read from the list sitemap by `prepare`.
         self.listed_offer_pages: List[str] = []
-        #: Offers whose pages hit MAX_OFFER_PAGES, reported by `crawl_warnings`.
         self._capped_offers: set = set()
 
     def prepare(self, brands: Sequence[str]) -> List[str]:
-        """Read every offer and sale page from the list sitemap.
-
-        Many are only reachable from emails or partner sites, like "15% Off
-        Selected | Use Code: TREAT", which lists Clinique products whose own
-        pages never mention that code. The sitemap is the only place they
-        can be found.
-        """
+        """Read every offer and sale page from the list sitemap."""
         import gzip
         from scrapling.fetchers import Fetcher
 
@@ -373,17 +260,7 @@ class LookfantasticAdapter(RetailerAdapter):
         return list(dict.fromkeys(hubs + self.listed_offer_pages))
 
     def scope_for_href(self, href: str):
-        """Read an offer's reach from where its link points.
-
-        Lookfantastic's URL structure states this plainly, so it can be
-        asserted rather than guessed:
-
-            /c/brands/<brand>/...          -> that brand
-            /c/health-beauty/<category>/   -> that department
-            /c/offers/...                  -> the whole site
-
-        Anything else is left unresolved rather than assumed.
-        """
+        """Read an offer's reach from where its link points."""
         path = href.split(f"{self.domain}", 1)[-1]
 
         brand = re.search(r"/c/brands/([^/]+)/", path)
@@ -391,9 +268,6 @@ class LookfantasticAdapter(RetailerAdapter):
             return (SCOPE_BRAND, brand.group(1).replace("-", " ").title())
 
         category = re.search(r"/c/health-beauty/([^/]+)/", path)
-        # "offers" and "sale" sit in the category slot but name no department:
-        # /c/health-beauty/offers/winter-sale/ is the site sale, not a
-        # "category: offers" campaign.
         if category and category.group(1) not in {"offers", "offer", "sale"}:
             return (SCOPE_CATEGORY, category.group(1).replace("-", " "))
 
@@ -403,24 +277,11 @@ class LookfantasticAdapter(RetailerAdapter):
         return (None, None)
 
     def extract_campaign_directory(self, response) -> List[Campaign]:
-        """Every offer on an offers page: its links, and the page's own heading.
-
-        The links are the site navigation's offers, which is on every page and
-        is why this is not part of `extract_campaigns` -- doing it there would
-        staple the whole offer menu onto every product.
-
-        The heading is the offer this page itself is for, e.g. "MAC Cosmetics
-        Sale" or "15% Off Selected | Use Code: TREAT". Its landing page is
-        this page, so it gets attached to exactly the products listed here.
-        """
-        # a product tile can read like an offer ("New Taormina Orange ...") but
-        # it is one product, not a campaign
+        """Every offer on an offers page: its links, and the page's own heading."""
         campaigns = [c for c in self._scan_offer_links(response)
                      if not self.is_product_url(c.landing_url or "")]
 
-        heading =clean_text(response.css("h1")[0].get_all_text()) if response.css("h1") else None
-        # "Sale" alone does not pass looks_like_offer, but on a page reached
-        # as an offers page it names the offer ("Makeup Sale & Offers")
+        heading = clean_text(response.css("h1")[0].get_all_text()) if response.css("h1") else None
         if heading and (looks_like_offer(heading) or re.search(r"\bsale\b", heading, re.I)):
             page = str(response.url).split("?")[0]
             scope, scope_value = self.scope_for_href(page)
@@ -437,11 +298,7 @@ class LookfantasticAdapter(RetailerAdapter):
         return campaigns
 
     def offer_page_products(self, response) -> List[str]:
-        """Ids of the products in this offer, from the page's product grid.
-
-        Only `#product-list` is read. The rest of the page carries around
-        seven recommended products that are not in the offer.
-        """
+        """Ids of the products in this offer, from the page's product grid."""
         ids = []
         for node in response.css("#product-list a"):
             href = (node.attrib.get("href") or "").split("?")[0]
@@ -452,12 +309,7 @@ class LookfantasticAdapter(RetailerAdapter):
         return list(dict.fromkeys(i for i in ids if i))
 
     def offer_page_links(self, response) -> List[str]:
-        """Offers pages to read after this one.
-
-        The landing page of every offer linked here, and this offer's next
-        page while its product grid is not empty. Pages are numbered
-        ?pageNumber=N and Lookfantastic links the next one from each page.
-        """
+        """Offers pages to read after this one."""
         links = []
         for campaign in self._scan_offer_links(response):
             url = (campaign.landing_url or "").split("?")[0]
@@ -485,11 +337,7 @@ class LookfantasticAdapter(RetailerAdapter):
         return self.parse_campaigns(response, str(response.url))
 
     def parse_campaigns(self, sel, url: str) -> List[Campaign]:
-        """Collect promotions from a page, each with an honest scope.
-
-        The two sources are structurally different elements, which is what
-        allows the scope to be asserted rather than guessed.
-        """
+        """Collect promotions from a page, each with an honest scope."""
         campaigns: List[Campaign] = []
         seen: set = set()
 
@@ -497,9 +345,6 @@ class LookfantasticAdapter(RetailerAdapter):
             cleaned = clean_text(text)
             if not cleaned or cleaned in seen:
                 return
-            # These elements also carry merchandising badges ("NEW IN",
-            # "BESTSELLER") that are not offers. Requiring some sign of an
-            # actual promotion keeps those out of the campaign list.
             if not looks_like_offer(cleaned):
                 return
             seen.add(cleaned)
@@ -516,29 +361,19 @@ class LookfantasticAdapter(RetailerAdapter):
                 )
             )
 
-        # Site-wide header strip. Present on every page, so its reach is the
-        # whole site regardless of which brand's page we happen to be on.
         for node in sel.css("a.strip-banner"):
             href = node.attrib.get("href")
             landing = f"https://{self.domain}{href}" if href and href.startswith("/") else href
             add(node.get_all_text(), SCOPE_SITEWIDE, landing)
 
-        # The offer attached to this specific product, taken from the PDP's own
-        # promotion banner. Only meaningful on a product page.
         if self.is_product_url(url):
             add(self._product_promotion_text(sel), SCOPE_PRODUCT)
 
         return campaigns
 
-    # --- helpers ----------------------------------------------------------
-
     @staticmethod
     def _json_ld_blocks(sel) -> List[Dict[str, Any]]:
-        """Parse every JSON-LD script on the page into dicts.
-
-        Malformed blocks are skipped rather than raising: one bad block should
-        not cost us the whole page.
-        """
+        """Parse every JSON-LD script on the page into dicts."""
         blocks: List[Dict[str, Any]] = []
         for node in sel.css('script[type="application/ld+json"]'):
             raw = node.text
@@ -565,12 +400,7 @@ class LookfantasticAdapter(RetailerAdapter):
 
     @classmethod
     def _verify_brand(cls, blocks: List[Dict[str, Any]]) -> tuple:
-        """Establish the brand from the breadcrumb's link into /c/brands/.
-
-        Returns (brand_name, how_verified). The breadcrumb is the retailer's
-        own categorisation of the product, which is why it counts as proof
-        where a URL slug or a title match would not.
-        """
+        """Establish the brand from the breadcrumb's link into /c/brands/."""
         crumbs = cls._find_type(blocks, "BreadcrumbList")
         if not crumbs:
             return None, "unverified"
@@ -590,13 +420,7 @@ class LookfantasticAdapter(RetailerAdapter):
     def _verify_brand_weakly(
         cls, title: Optional[str], url: str, target_brands: Sequence[str]
     ) -> tuple:
-        """Corroborate a REQUESTED brand from the title and the URL.
-
-        Used only when the page has no breadcrumb brand link. Safe as a
-        fallback because it tests only brands we already asked about -- it
-        cannot invent one -- and needs the retailer to have said the same
-        thing twice, in the title and in the slug.
-        """
+        """Corroborate a REQUESTED brand from the title and the URL."""
         if not title or not target_brands:
             return None, "unverified"
 
@@ -607,7 +431,6 @@ class LookfantasticAdapter(RetailerAdapter):
             slug = cls._brand_slug(brand)
             if not slug:
                 continue
-            # The title must START with the brand, not merely contain it.
             if not title_folded.startswith(brand.strip().casefold()):
                 continue
             if f"/{slug}-" in path or f"/{slug}/" in path:
@@ -628,20 +451,7 @@ class LookfantasticAdapter(RetailerAdapter):
 
     @staticmethod
     def _extract_prices(sel) -> tuple:
-        """Read RRP and current price from `#product-price`.
-
-        The block interleaves screen-reader labels with values:
-
-            <span class="sr-only">Recommended Retail Price:</span>
-            <span>£42.00</span>
-
-        so the spans are walked in order and each label claims the next
-        value. Keying on the label rather than the CSS class means a restyle
-        cannot silently swap the two numbers.
-
-        Three layouts occur: both labels, only "Current price:", or no labels
-        and one bare price.
-        """
+        """Read RRP and current price from `#product-price`."""
         original = current = None
         currency = None
         pending: Optional[str] = None
@@ -673,12 +483,9 @@ class LookfantasticAdapter(RetailerAdapter):
                 unlabelled.append(amount)
             pending = None
 
-        # Layout 3: an undiscounted product shows a single unlabelled price.
-        # Take the first amount in the block -- the only one on offer.
         if current is None and unlabelled:
             current = unlabelled[0]
 
-        # Defensive: if only an RRP was labelled, it is the price being asked.
         if current is None and original is not None:
             current, original = original, None
 
@@ -686,11 +493,7 @@ class LookfantasticAdapter(RetailerAdapter):
 
     @staticmethod
     def _extract_saving(sel) -> tuple:
-        """Read the retailer's own advertised saving, e.g. "Save £9.75 (25% Off)".
-
-        Keeping the stated percentage lets validation cross-check it against
-        the percentage implied by the two prices.
-        """
+        """Read the retailer's own advertised saving, e.g. "Save £9.75 (25% Off)"."""
         nodes = sel.css("#product-price")
         if not nodes:
             return None, None
@@ -708,16 +511,7 @@ class LookfantasticAdapter(RetailerAdapter):
 
     @staticmethod
     def _product_title(product_ld: Dict[str, Any], sel) -> str:
-        """The product's name, repaired when Lookfantastic truncates it.
-
-        Their structured data cuts some names at a hyphen -- "Clinique Anti"
-        for Anti-Blemish Solutions -- affecting about 20 of 1,069 products,
-        each unmatchable against other retailers.
-
-        The `<h1>` has the full name, and is used only when the truncated
-        name is a strict prefix of it. That prefix IS the proof a truncation
-        happened; any other disagreement is left alone.
-        """
+        """The product's name, repaired when Lookfantastic truncates it."""
         name = clean_text(product_ld.get("name")) or ""
         heading = clean_text(" ".join(
             str(part) for part in sel.css("h1::text")
@@ -732,21 +526,9 @@ class LookfantasticAdapter(RetailerAdapter):
 
     @staticmethod
     def _product_promotion_text(sel) -> Optional[str]:
-        """The promotional copy that applies to this product specifically.
-
-        Anchored on `[data-e2e="pdp-pap-banner"]`, which appears exactly once
-        per product page. The looser `[data-track="promoClick"]` must NOT be
-        used here: a product page carries seven of them, six belonging to the
-        recommended products in the "you may also like" rails. Reading those
-        would attach another product's offer to this one -- real text from the
-        page describing something that isn't true of this product.
-        """
+        """The promotional copy that applies to this product specifically."""
         for node in sel.css("[data-e2e='pdp-pap-banner']"):
             text = clean_text(node.attrib.get("data-track-push"))
-            # The same banner slot is reused for merchandising badges ("NEW
-            # IN", "BESTSELLER"). Those are not offers, and letting one land
-            # in promotional_copy tells a brand team a product is promoted
-            # when it is not.
             if text and looks_like_offer(text):
                 return text
         return None

@@ -1,24 +1,13 @@
-"""The scheduled job. Edit the three settings below, then run it.
+r"""The scheduled job. Edit the settings below, then run it.
 
-Built for Windows Task Scheduler:
+Windows Task Scheduler:
 
-    Program    <this folder>\\.venv\\Scripts\\python.exe
+    Program    <this folder>\.venv\Scripts\python.exe
     Arguments  scrape_job.py
     Start in   <this folder>
 
-Retailers run one after another, never together -- browser crawls starve each
-other, and three at once once turned a 54-minute run into 30 hours.
-
-Every run appends to output/scrape_job.log:
-
-    2026-09-09 14:30:00  --- start: 3 retailer(s), campaigns_only=False ---
-    2026-09-09 15:24:11  lookfantastic  ok       products=1069  campaigns=9  refused=0/1083   3251s
-    2026-09-09 16:02:40  boots          ok       products=252   campaigns=20 refused=0/289    2309s
-    2026-09-09 16:05:02  john_lewis     blocked  products=0     campaigns=0  refused=0/2      142s
-    2026-09-09 16:05:02  --- done: 1321 products, 29 campaigns, 1 blocked ---
-
-The refused column says whether a shop turned us away. `blocked` means every
-page loaded but came back empty, which is how the bigger shops soft-block us.
+Retailers run one after another. Every run appends a line per retailer to
+output/scrape_job.log.
 """
 
 import json
@@ -27,38 +16,38 @@ import sys
 from datetime import datetime
 from pathlib import Path
 
-# ---------------------------------------------------------------------------
-# Settings. This is the only part to edit.
-# ---------------------------------------------------------------------------
+# Uncomment the shops to scrape. Names: python run.py --list-retailers
+RETAILERS = [
+    "lookfantastic", 
+    # "boots",
+    # "johnlewis",
+    # "allbeauty",
+    # "asos",
+    # "next",
+    # "amazon",
+]
 
-#: Which shops to scrape, in order. Names come from `python run.py --list-retailers`.
-RETAILERS = ["lookfantastic", "boots", "johnlewis"]
+BRANDS = [
+    "Clinique",
+    "MAC", 
+    "Tom Ford", 
+    "Jo Malone",
+    "Estee Lauder", 
+    "Bobbi Brown", 
+    "Too Faced",
+]
 
-#: Which brands to look for. Ignored when CAMPAIGNS_ONLY is True, because a
-#: campaign belongs to the whole shop rather than to one brand.
-BRANDS = ["Clinique", "MAC", "Tom Ford", "Jo Malone",
-          "Estee Lauder", "Bobbi Brown", "Too Faced"]
+# True = offers only, a minute or two. False = the full crawl, hours.
+CAMPAIGNS_ONLY = False
 
-#: True  = offers only. A few page fetches per shop, done in a minute or two.
-#: False = the full crawl, products and offers. Hours, so schedule it nightly.
-CAMPAIGNS_ONLY = True
-
-#: Cap per brand, for a quick test. None means the whole catalogue.
 MAX_PRODUCTS = None
-
-# ---------------------------------------------------------------------------
 
 HERE = Path(__file__).resolve().parent
 OUTPUT = HERE / "output"
 LOG = OUTPUT / "scrape_job.log"
 
-#: Give up on a shop after this long, so one hung browser cannot hold up the
-#: rest of the list. Generous: a full Lookfantastic crawl is about an hour.
 TIMEOUT_SECONDS = 3 * 60 * 60
 
-#: John Lewis throttles hard and refuses a share of requests. At the default
-#: limit the run fails outright and publishes nothing, so allow the refusals
-#: and let the log report them instead.
 REFUSAL_LIMITS = {"johnlewis": 0.9}
 
 
@@ -116,8 +105,6 @@ def scrape(retailer: str) -> dict:
     if exit_code is None:
         return {**empty, "status": "timeout"}
     if exit_code == 3:
-        # run.py found a lock, so this shop is still busy from an earlier
-        # trigger. That is the lock doing its job, not a failure.
         return {**empty, "status": "skipped"}
 
     after = newest_manifest(retailer_folder)
@@ -135,8 +122,6 @@ def scrape(retailer: str) -> dict:
     campaigns = manifest.get("campaigns") or 0
     status = manifest.get("status") or "unknown"
 
-    # Every page loaded and nothing came back: the shop served us empty
-    # pages rather than an error, which is how the big ones soft-block.
     if total and not refused and not products and not campaigns:
         status = "blocked"
 
@@ -173,8 +158,6 @@ def main() -> int:
     log(f"--- done: {products} products, {campaigns} campaigns, "
         f"{blocked} blocked ---")
 
-    # Task Scheduler shows this as the Last Run Result. Non-zero only when
-    # nothing worked, so a partial sweep does not look like a failure.
     return 0 if worked else 1
 
 

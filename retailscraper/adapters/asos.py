@@ -1,20 +1,4 @@
-"""ASOS adapter.
-
-Search-driven: no per-brand catalogue URL, but `/search/?q=<brand>&page=N`
-is allowed by robots.txt and embeds its whole result set as data. Like
-AllBeauty, the listing IS the data -- no product page is ever fetched.
-
-Four things that bite if assumed:
-
-  * plain HTTP hangs rather than failing, so everything uses a browser
-  * the embedded blob is not valid JSON -- it holds `\'`, which json.loads
-    rejects, so it is unescaped first
-  * `price` is the WAS price; `reducedPrice` is what you pay
-  * search is not a brand filter -- "Tom Ford" returns Tommy Jeans, so every
-    result is checked against its own `brandName`
-
-Not stocked: Tom Ford, Jo Malone.
-"""
+"""ASOS adapter."""
 
 import json
 import re
@@ -31,19 +15,14 @@ from ..promotions import (
 from ..validation import match_brand
 from .base import ListingPage, RetailerAdapter, register
 
-# Product URLs end in /prd/<numeric id>, usually with a colourWayId fragment.
 _PRODUCT_URL_RE = re.compile(
     r"^https?://(?:www\.)?asos\.com/.+/prd/(\d+)", re.I
 )
 
-#: Results per search page, as ASOS renders them.
 _PAGE_SIZE = 72
 
-#: "179 styles found" -- the total behind a search, used only for logging.
 _TOTAL_RE = re.compile(r"(\d[\d,]*)\s+styles found", re.IGNORECASE)
 
-#: The storefront states its own currency. ASOS geo-prices, so it is read
-#: rather than assumed -- a page from outside the UK can quote "$67.89".
 _CURRENCY_RE = re.compile(r'"currency"\s*:\s*\{[^}]*?"currency"\s*:\s*"([A-Z]{3})"')
 
 
@@ -55,18 +34,13 @@ class AsosAdapter(RetailerAdapter):
     domain = "www.asos.com"
     display_name = "ASOS"
 
-    # ASOS's sitemap covers the whole catalogue with no brand scoping, so
-    # discovery uses search instead.
     sitemap_urls: List[str] = []
 
-    # The search payload carries no category, so --categories cannot work.
     supports_categories = False
 
-    #: The only currency this adapter will publish.
     EXPECTED_CURRENCY = "GBP"
 
     def __init__(self) -> None:
-        # so a run that returns nothing can say why
         self.wrong_currency_pages = 0
         self.currencies_seen: set = set()
 
@@ -84,8 +58,6 @@ class AsosAdapter(RetailerAdapter):
                 max_pages=2,
             ),
         )
-
-    # --- discovery --------------------------------------------------------
 
     def product_listing_urls(
         self, brand: str, categories: Sequence[str], max_pages: int
@@ -112,8 +84,6 @@ class AsosAdapter(RetailerAdapter):
         """Unused: discovery reads the search payload, not a URL list."""
         return []
 
-    # --- extraction -------------------------------------------------------
-
     def extract_products_from_listing(
         self, response, brand: Optional[str] = None
     ) -> List[Product]:
@@ -122,7 +92,6 @@ class AsosAdapter(RetailerAdapter):
         if not raw_products:
             return []
 
-        # refuse the whole page rather than publish non-UK prices
         currency = self.page_currency(response)
         if currency:
             self.currencies_seen.add(currency)
@@ -136,7 +105,6 @@ class AsosAdapter(RetailerAdapter):
         products = []
         for raw in raw_products:
             vendor = clean_text(raw.get("brandName"))
-            # a search for "Tom Ford" returns Tommy Jeans
             if targets and (not vendor or match_brand(vendor, targets) is None):
                 continue
             product = self._product_from_json(raw, vendor, now)
@@ -153,7 +121,6 @@ class AsosAdapter(RetailerAdapter):
         if not (product_id and title and path and vendor):
             return None
 
-        # `price` is the was-price whenever `reducedPrice` is present.
         was = self._money(raw.get("price"))
         reduced = self._money(raw.get("reducedPrice"))
         current = reduced if reduced is not None else was
@@ -175,7 +142,6 @@ class AsosAdapter(RetailerAdapter):
             source_url=url,
             sku=str(raw["productCode"]) if raw.get("productCode") else None,
             current_price=current,
-            # the colours behind this tile are not all the same price
             price_is_from=bool(raw.get("hasMultiplePrices")),
             original_price=original,
             discount_amount=(
@@ -190,7 +156,6 @@ class AsosAdapter(RetailerAdapter):
             availability="InStock",
             category=None,
             variant_count=None,
-            # id and productCode are different numbering schemes
             sku_matches_product_id=False,
             promotional_copy=None,
             scraped_at=scraped_at,
@@ -220,7 +185,6 @@ class AsosAdapter(RetailerAdapter):
             return []
         start += len('"products":')
 
-        # walk to the matching bracket -- nested objects, so no regex
         depth = 0
         end = None
         for index in range(start, len(body)):
@@ -235,8 +199,6 @@ class AsosAdapter(RetailerAdapter):
         if end is None:
             return []
 
-        # \' is legal in JS but not JSON -- one apostrophe in one product
-        # title would otherwise cost the whole page
         payload = body[start:end].replace("\\'", "'")
         try:
             parsed = json.loads(payload)
@@ -277,11 +239,7 @@ class AsosAdapter(RetailerAdapter):
         return self._scan_offer_links(response)
 
     def extract_campaigns(self, response) -> List[Campaign]:
-        """Offers stated on a search or landing page.
-
-        Scoped sitewide: a search page's banner is the same one shown
-        everywhere, and nothing ties it to one brand.
-        """
+        """Offers stated on a search or landing page."""
         url = str(response.url)
         campaigns: List[Campaign] = []
         seen: set = set()
@@ -292,8 +250,6 @@ class AsosAdapter(RetailerAdapter):
                 continue
             if not is_confident_offer(text):
                 continue
-            # a bare tier ("Save 12%") is a filter, not a campaign -- as a
-            # sitewide campaign it would attach to every product
             if is_browse_facet(text, url):
                 continue
             seen.add(text)

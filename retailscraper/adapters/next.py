@@ -1,34 +1,4 @@
-"""Next adapter.
-
-Next sits behind Akamai Bot Manager. Its product pages answer 403 to plain
-HTTP, to curl with a full Chrome header set, to a warmed-up session carrying
-Akamai's own cookies, and to a stealth browser. Only the homepage and
-sitemaps came back.
-
-**What gets through is the TLS handshake, not the headers.** `FetcherSession`
-can impersonate a real browser's handshake, and which browser decides it:
-
-    impersonate="safari"    -> HTTP 200 everywhere            <- used here
-    impersonate="firefox"   -> HTTP 200 on brand pages, 403 on /sale
-    impersonate="chrome"    -> HTTP 200, but a 2 KB stub
-    impersonate="chrome131" -> HTTP 403
-    impersonate="edge"      -> HTTP 403
-
-No JavaScript sensor is defeated and no challenge solved -- Next simply
-serves pages to a client whose handshake it trusts. robots.txt permits these
-paths; only `*/search/search` and `*brand-beaverbrooks*` are disallowed.
-
-**Discovery** is `/brands/<slug>` paginated with `?p=N`. The slug comes from
-the brand page itself, because Next drops accents entirely: "Estee Lauder" is
-`este-lauder`, not `estee-lauder`.
-
-**Product URLs are opaque** -- `/style/su449110/af1610` names neither brand
-nor product -- so the product sitemap cannot find a brand's items and the
-brand listing is the only route.
-
-Product pages carry a JSON-LD `Product`. Three appear per page and only the
-first has `offers`; the others repeat the name with nulls.
-"""
+"""Next adapter."""
 
 import json
 import re
@@ -44,22 +14,16 @@ from ..promotions import (
 )
 from .base import ListingPage, RetailerAdapter, register
 
-# /style/<style-code>/<item-code>, e.g. /style/su449110/af1610
 _PRODUCT_URL_RE = re.compile(
     r"^https?://(?:www\.)?next\.co\.uk/style/([a-z0-9]+)/([a-z0-9]+)/?$", re.I
 )
 
-# Next links its products with absolute URLs, not paths.
 _PRODUCT_LINK_RE = re.compile(
     r"https://www\.next\.co\.uk/style/[a-z0-9]+/[a-z0-9]+", re.I
 )
 
-#: The TLS fingerprint Next serves pages to. See the module docstring -- this
-#: is load-bearing, and a Chrome value here returns 403 or an empty stub.
 _IMPERSONATE = "safari"
 
-#: Products per brand listing page. Next varies this (10 to 33 observed), so
-#: it is only used to decide how many pages to ask for.
 _LISTING_PAGE_SIZE = 10
 
 
@@ -71,45 +35,22 @@ class NextAdapter(RetailerAdapter):
     domain = "www.next.co.uk"
     display_name = "Next"
 
-    # Next answers 403 rather than 429 when it decides a client is asking
-    # too fast, and it does not recover within a run: a seven-brand crawl at
-    # full speed had 1,128 of its 1,154 requests refused and returned five
-    # products. Two seconds apart, one at a time, it serves every page.
     crawl_delay = 2.5
     max_concurrent_requests = 1
 
-    # No sitemap route to products: /style/su449110/af1610 names neither the
-    # brand nor the product, so the 3,811 URLs per shard cannot be filtered
-    # down to one brand without fetching every one of them.
     sitemap_urls: List[str] = []
 
-    # Next files products under category facets (/brands/<slug>/f/category-
-    # serums), but the vocabulary is Next's own and differs per brand, so a
-    # `--categories` filter cannot be honoured faithfully.
     supports_categories = False
 
-    # prepare() resolves this retailer's brand page for each brand and
-    # warns about the ones it cannot find, so an empty brand that DID
-    # resolve is a fault rather than an absence.
     confirms_brand_stocking = True
 
-    #: Brands whose Next slug is not the obvious slugification. Next drops
-    #: accented characters rather than folding them, so "Estée Lauder"
-    #: becomes "este-lauder" and not "estee-lauder".
     BRAND_SLUG_OVERRIDES = {
         "estee lauder": "este-lauder",
         "estée lauder": "este-lauder",
     }
 
-    # --- fetching ---------------------------------------------------------
-
     def configure_session(self, manager) -> None:
-        """A session whose TLS handshake Next trusts.
-
-        No browser is involved: the pages are server-rendered and complete
-        without JavaScript, so this is the cheapest adapter of the lot once
-        the handshake is right.
-        """
+        """A session whose TLS handshake Next trusts."""
         from scrapling.fetchers import FetcherSession
 
         manager.add(
@@ -121,8 +62,6 @@ class NextAdapter(RetailerAdapter):
             ),
         )
 
-    # --- discovery --------------------------------------------------------
-
     @classmethod
     def _brand_slug(cls, brand: str) -> str:
         key = brand.strip().lower()
@@ -131,13 +70,7 @@ class NextAdapter(RetailerAdapter):
         return re.sub(r"[^a-z0-9]+", "-", key).strip("-")
 
     def prepare(self, brands: Sequence[str]) -> List[str]:
-        """Confirm each brand has a Next brand page before crawling.
-
-        Fetches the page rather than trusting the brands sitemap: that
-        sitemap lists no page for MAC, Tom Ford, Clinique, Bobbi Brown or
-        Too Faced, yet `/brands/mac` serves 34 products. Reporting "not
-        stocked" from an incomplete index looks like a finding, not a gap.
-        """
+        """Confirm each brand has a Next brand page before crawling."""
         from scrapling.fetchers import FetcherSession
 
         warnings: List[str] = []
@@ -177,13 +110,7 @@ class NextAdapter(RetailerAdapter):
     def product_listing_urls(
         self, brand: str, categories: Sequence[str], max_pages: int
     ) -> List[ListingPage]:
-        """The brand's listing, paginated with `?p=N`.
-
-        Next gives no product count and no page count, and page size varies
-        from 10 to 33, so depth cannot be computed from a stated total the
-        way it can at John Lewis or M&S. Pages that run past the end simply
-        repeat the last set, and those duplicates deduplicate away on id.
-        """
+        """The brand's listing, paginated with `?p=N`."""
         slug = self._brand_slug(brand)
         base = f"https://{self.domain}/brands/{slug}"
         return [
@@ -203,13 +130,7 @@ class NextAdapter(RetailerAdapter):
         return f"{match.group(1)}-{match.group(2)}".lower() if match else None
 
     def extract_product_links(self, response, brand: Optional[str] = None) -> List[str]:
-        """Product URLs on a brand listing.
-
-        Read from the raw body rather than from anchors: Next repeats each
-        product as an image link and a title link, and the fragment
-        (`#af1610`) differs between them, so matching the URL shape and
-        deduplicating is steadier than walking the DOM.
-        """
+        """Product URLs on a brand listing."""
         body = self._body(response)
         found: List[str] = []
         for url in _PRODUCT_LINK_RE.findall(body or ""):
@@ -219,13 +140,7 @@ class NextAdapter(RetailerAdapter):
         return found
 
     def select_candidates(self, urls: Iterable[str], brands: Sequence[str]) -> List[str]:
-        """Every product URL, unfiltered.
-
-        There is nothing to filter on: Next's product URLs name neither the
-        brand nor the product. They arrive from a brand listing, so they are
-        already brand-scoped, and each one's brand is proved from its own
-        JSON-LD afterwards.
-        """
+        """Every product URL, unfiltered."""
         keep: List[str] = []
         for url in urls:
             if self.is_product_url(url):
@@ -233,8 +148,6 @@ class NextAdapter(RetailerAdapter):
                 if clean not in keep:
                     keep.append(clean)
         return keep
-
-    # --- extraction -------------------------------------------------------
 
     def extract_product(
         self, response, target_brands: Sequence[str] = ()
@@ -280,9 +193,6 @@ class NextAdapter(RetailerAdapter):
             sku=clean_text(block.get("sku")),
             current_price=current,
             price_is_from=False,
-            # Next states one price. No was-price appears in the markup or
-            # the structured data on any product examined, so claiming a
-            # discount here would be inventing one.
             original_price=None,
             discount_amount=None,
             discount_percent=percent_off(None, current),
@@ -290,8 +200,6 @@ class NextAdapter(RetailerAdapter):
             availability=availability,
             category=None,
             variant_count=None,
-            # "AF1-610-01" and the URL's "su449110-af1610" are related but
-            # not equal, so comparing them would reject every record.
             sku_matches_product_id=False,
             promotional_copy=None,
             scraped_at=datetime.now(timezone.utc).isoformat(),
@@ -314,12 +222,7 @@ class NextAdapter(RetailerAdapter):
             return None
 
     def _product_json_ld(self, response) -> Optional[Dict[str, Any]]:
-        """The `Product` block that carries an offer.
-
-        A Next product page holds three. Only the first has `brand`, `sku`
-        and `offers`; the rest repeat the name with nulls, and taking one of
-        those would reject the record for having no brand.
-        """
+        """The `Product` block that carries an offer."""
         for raw in re.findall(
             r'<script[^>]*application/ld\+json[^>]*>(.*?)</script>',
             self._body(response),
@@ -339,13 +242,7 @@ class NextAdapter(RetailerAdapter):
         return None
 
     def campaign_discovery_urls(self) -> List[str]:
-        """Next's sale and clearance hubs.
-
-        Both are linked from its own homepage and permitted by robots.txt.
-        They need the Safari fingerprint specifically: with `firefox` the
-        brand pages load but these two answer 403, which is why the adapter
-        impersonates Safari rather than Firefox.
-        """
+        """Next's sale and clearance hubs."""
         return [
         "https://www.next.co.uk/sale",
         "https://www.next.co.uk/clearance",
@@ -356,13 +253,7 @@ class NextAdapter(RetailerAdapter):
         return self._scan_offer_links(response)
 
     def extract_campaigns(self, response) -> List[Campaign]:
-        """Promotional copy stated on the page.
-
-        Next advertises far less than the beauty specialists do -- no offer
-        strip, and no was-price on any Estee Lauder product examined -- so
-        this usually finds nothing, which is the honest answer rather than a
-        gap.
-        """
+        """Promotional copy stated on the page."""
         url = str(response.url)
         on_product = self.is_product_url(url)
         campaigns: List[Campaign] = []

@@ -1,21 +1,4 @@
-"""AllBeauty adapter.
-
-A Shopify store, so the catalogue is available as JSON and there is nothing
-to scrape:
-
-    https://allbeauty.com/collections/<brand>/products.json?limit=250&page=N
-
-One request returns up to 250 complete products -- vendor, product_type,
-price, compare_at_price, sku, availability -- so the listing IS the data and
-no product page is ever fetched. Seven brands cost seven requests, against
-1,083 page fetches on Lookfantastic.
-
-Two vendor spellings the brand matcher already handles, and which should NOT
-be "fixed" here: MAC is "M.A.C", Estee Lauder is "Estee Lauder" with an
-accent.
-
-`products.json` states no currency, so prepare() reads it off the storefront.
-"""
+"""AllBeauty adapter."""
 
 import json
 import re
@@ -31,21 +14,16 @@ from ..promotions import (
 )
 from .base import ListingPage, RetailerAdapter, register
 
-# Product pages are /products/<handle>; the numeric id lives in the JSON.
 _PRODUCT_URL_RE = re.compile(
     r"^https?://(?:www\.)?allbeauty\.com/products/([a-z0-9-]+)/?$", re.I
 )
 
-#: Shopify caps a collection page at 250 products.
 _PAGE_SIZE = 250
 
-#: Shopify states the storefront's active currency on every page:
-#:     Shopify.currency = {"active":"GBP","rate":"1.0"};
 _SHOPIFY_CURRENCY_RE = re.compile(
     r'Shopify\.currency\s*=\s*\{[^}]*"active"\s*:\s*"([A-Z]{3})"'
 )
 
-#: `prepare` runs before the crawler's session exists, so it uses urllib.
 _PROBE_USER_AGENT = (
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
     "(KHTML, like Gecko) Chrome/124.0 Safari/537.36"
@@ -60,23 +38,15 @@ class AllBeautyAdapter(RetailerAdapter):
     domain = "allbeauty.com"
     display_name = "AllBeauty"
 
-    # No sitemap route: the Shopify collection API is both cheaper and
-    # brand-scoped, which the sitemap is not.
     sitemap_urls: List[str] = []
 
-    # The category is stated on every product as `product_type`, so a filter
-    # is applied to the data we already have rather than by choosing a
-    # different listing.
     supports_categories = True
 
-    #: Brand -> Shopify collection handle, where it differs from the slug.
-    #: Verified against the live store: each of these collections contains
-    #: exactly one vendor.
     COLLECTION_HANDLES = {
-        "mac": "mac",                    # vendor is "M.A.C"
-        "jo malone": "jo-malone",        # not "jo-malone-london" here
+        "mac": "mac",
+        "jo malone": "jo-malone",
         "jo malone london": "jo-malone",
-        "estee lauder": "estee-lauder",  # vendor is "Estée Lauder"
+        "estee lauder": "estee-lauder",
     }
 
     CATEGORY_SLUGS = {
@@ -93,23 +63,13 @@ class AllBeautyAdapter(RetailerAdapter):
         "gifts": "gifts",
     }
 
-    #: Where offer discovery starts: the shop's offers page. It links every
-    #: live offer ("Clinique Up to 35% off", "Makeup Up to 50% off") and, in
-    #: its menu, the offer collections (bundles, outlet, value duos). The two
-    #: collections read before, /collections/offers and /collections/sale,
-    #: gave one campaign each; this page gave 18 on 15 Sep 2026.
     CAMPAIGN_HUB_PATHS = ["/pages/offers"]
 
-    #: Safety stop for one offer collection's product pages (250 a page).
     MAX_OFFER_PAGES = 20
 
-    #: The only currency this adapter will publish.
     EXPECTED_CURRENCY = "GBP"
 
     def __init__(self) -> None:
-        #: What the storefront said it was quoting. Defaults to the expected
-        #: currency so a run that skips prepare() still produces records,
-        #: and prepare() replaces it with what the store actually declared.
         self.storefront_currency = self.EXPECTED_CURRENCY
 
     def configure_session(self, manager) -> None:
@@ -119,13 +79,7 @@ class AllBeautyAdapter(RetailerAdapter):
         manager.add("default", FetcherSession())
 
     def prepare(self, brands: Sequence[str]) -> List[str]:
-        """Confirm the storefront is still quoting sterling.
-
-        `products.json` gives a bare number with no currency, so one request
-        to the storefront settles what it is denominated in. AllBeauty wins
-        more price comparisons than any other retailer, so a wrong currency
-        here would distort the whole report.
-        """
+        """Confirm the storefront is still quoting sterling."""
         import urllib.request
 
         request = urllib.request.Request(
@@ -137,7 +91,6 @@ class AllBeautyAdapter(RetailerAdapter):
                 "utf-8", "replace"
             )
         except Exception:
-            # unreachable is not wrong -- the crawl will fail on its own
             return []
 
         found = _SHOPIFY_CURRENCY_RE.search(html)
@@ -157,8 +110,6 @@ class AllBeautyAdapter(RetailerAdapter):
             ]
         return []
 
-    # --- discovery --------------------------------------------------------
-
     @staticmethod
     def _brand_slug(brand: str) -> str:
         return re.sub(r"[^a-z0-9]+", "-", brand.strip().lower()).strip("-")
@@ -171,12 +122,7 @@ class AllBeautyAdapter(RetailerAdapter):
     def product_listing_urls(
         self, brand: str, categories: Sequence[str], max_pages: int
     ) -> List[ListingPage]:
-        """Paginated JSON for one brand's collection.
-
-        Categories are deliberately not part of the URL: `product_type` is on
-        every product, so filtering happens on the data rather than by picking
-        a narrower collection. That keeps one request serving every category.
-        """
+        """Paginated JSON for one brand's collection."""
         handle = self._collection(brand)
         return [
             ListingPage(
@@ -194,18 +140,11 @@ class AllBeautyAdapter(RetailerAdapter):
         return [f"https://{self.domain}{path}" for path in self.CAMPAIGN_HUB_PATHS]
 
     def campaign_seed_urls(self, brands: Sequence[str]) -> List[str]:
-        """None. The offers page is read on every run as an offers page, so
-        the offers it links are followed and tied to their products."""
+        """None. The offers page is read on every run, so its offers are followed."""
         return []
 
     def scope_for_href(self, href: str):
-        """AllBeauty's offer links are collection pages.
-
-        A collection can be a brand or a theme and the URL does not say which,
-        so anything that is not clearly the sitewide sale is left unresolved
-        rather than guessed into a brand campaign. Which products an offer
-        covers comes from its collection's product list instead.
-        """
+        """AllBeauty's offer links are collection pages."""
         path = href.split(self.domain, 1)[-1]
         if re.search(r"/collections/(sale|offers)/?$", path):
             return (SCOPE_SITEWIDE, None)
@@ -223,12 +162,7 @@ class AllBeautyAdapter(RetailerAdapter):
         return bool(re.fullmatch(r"offers-(save|outlet)-\d+", handle))
 
     def _offer_collections(self, response) -> List[tuple]:
-        """(link text, collection handle) for every offer collection linked here.
-
-        Two kinds: a link whose text states an offer ("Clinique Up to 35%
-        off"), and a collection in the shop's own offers section
-        (/collections/offers-bundles) whatever its link says.
-        """
+        """(link text, collection handle) for every offer collection linked here."""
         found = {}
         for node in response.css("a[href]"):
             href = node.attrib.get("href") or ""
@@ -243,12 +177,7 @@ class AllBeautyAdapter(RetailerAdapter):
         return [(text, handle) for handle, text in found.items()]
 
     def extract_campaign_directory(self, response) -> List[Campaign]:
-        """Every offer an offers page links to.
-
-        Offer-worded links come from the shared scan. Collections in the
-        offers section that are named without a figure ("Value Duos",
-        "Outlet") are offers too, and are recorded under their own name.
-        """
+        """Every offer an offers page links to."""
         campaigns = [c for c in self._scan_offer_links(response)
                      if "/products/" not in (c.landing_url or "")]
         worded = {self._handle(c.landing_url or "") for c in campaigns}
@@ -267,16 +196,7 @@ class AllBeautyAdapter(RetailerAdapter):
         return campaigns
 
     def offer_page_links(self, response) -> List[str]:
-        """What to read after an offers page.
-
-        From an HTML offers page: each linked offer collection's product list
-        (products.json), and each linked offers page such as /pages/makeup.
-        From a product list: its next page, while pages come back full.
-
-        `&offer=1` keeps the product list distinct from the same collection
-        read as a brand listing, which the crawler would otherwise skip as a
-        duplicate URL. Shopify ignores the parameter.
-        """
+        """What to read after an offers page."""
         url = str(response.url)
         payload = self._json(response)
         if payload is not None:
@@ -285,6 +205,8 @@ class AllBeautyAdapter(RetailerAdapter):
                 return [re.sub(r"([?&]page=)\d+", rf"\g<1>{page + 1}", url)]
             return []
 
+        # offer=1 does nothing at Shopify; it just keeps these URLs distinct
+        # from the same collection fetched as a brand listing.
         links = [f"https://{self.domain}/collections/{handle}/products.json"
                  f"?limit={_PAGE_SIZE}&page=1&offer=1"
                  for _, handle in self._offer_collections(response)]
@@ -310,18 +232,12 @@ class AllBeautyAdapter(RetailerAdapter):
         return bool(_PRODUCT_URL_RE.match(url.split("?")[0]))
 
     def product_id_from_url(self, url: str) -> Optional[str]:
-        """AllBeauty product URLs carry a handle, not the numeric id.
-
-        Identity comes from the JSON instead, so this returns None rather
-        than inventing an id from the slug.
-        """
+        """AllBeauty product URLs carry a handle, not the numeric id."""
         return None
 
     def select_candidates(self, urls: Iterable[str], brands: Sequence[str]) -> List[str]:
         """Unused: discovery is the collection API, not a URL list."""
         return []
-
-    # --- extraction -------------------------------------------------------
 
     def extract_products_from_listing(
         self, response, brand: Optional[str] = None
@@ -355,39 +271,27 @@ class AllBeautyAdapter(RetailerAdapter):
             return None
 
         current = min(prices)
-        # A range of shades at different prices has no single price, so the
-        # low end is reported as a from-price rather than passed off as the
-        # product's price.
         price_is_from = len(set(prices)) > 1
 
-        # compare_at_price is Shopify's was-price. Take it from the variant
-        # the reported price came from, so the pair describes one item.
         cheapest = min(
             (v for v in variants if self._money(v.get("price")) == current),
             key=lambda v: self._money(v.get("price")),
             default=None,
         )
         original = self._money((cheapest or {}).get("compare_at_price"))
-        # Shopify leaves compare_at_price set to the same value (or lower)
-        # when nothing is discounted; only a genuinely higher number is a was-price.
         if original is not None and original <= current:
             original = None
 
         return Product(
             retailer=self.display_name,
             brand=vendor,
-            # The vendor field is the retailer's own structured statement of
-            # the brand -- the same standing as John Lewis's JSON-LD brand.
             brand_verified_by="shopify_vendor",
             product_id=str(product_id),
             product_title=title,
             product_url=canonical_url(f"https://{self.domain}/products/{handle}"),
             source_url=canonical_url(f"https://{self.domain}/products/{handle}"),
             sku=clean_text((cheapest or {}).get("sku")) if len(variants) == 1 else None,
-            # Shopify numbers products and stock units separately: the product
-            # id is 8456134033558 while the variant SKU is the supplier's
-            # 12947142. They are never expected to match, so the
-            # variant-conflict check would reject every record here.
+            # Shopify numbers products and stock units separately, so they never match.
             sku_matches_product_id=False,
             current_price=current,
             price_is_from=price_is_from,
@@ -400,13 +304,10 @@ class AllBeautyAdapter(RetailerAdapter):
                 if original is not None and original > 0
                 else None
             ),
-            # What prepare() read off the storefront, not an assumption.
             currency=self.storefront_currency,
             availability="InStock" if any(v.get("available") for v in variants) else "OutOfStock",
             category=self._category(raw.get("product_type")),
             variant_count=len(variants) or None,
-            # Shopify's product JSON carries no promotional copy; offers are
-            # expressed as compare_at_price and on the collection pages.
             promotional_copy=None,
             scraped_at=scraped_at,
         )
@@ -431,12 +332,7 @@ class AllBeautyAdapter(RetailerAdapter):
 
     @staticmethod
     def _json(response) -> Optional[Dict[str, Any]]:
-        """Parse a JSON response body, or None when it is not JSON.
-
-        A collection that does not exist returns the storefront HTML with a
-        200, so a parse failure here means "no such collection" rather than
-        an error worth raising.
-        """
+        """Parse a JSON response body, or None when it is not JSON."""
         try:
             body = response.body
         except AttributeError:  # pragma: no cover - defensive
@@ -456,18 +352,10 @@ class AllBeautyAdapter(RetailerAdapter):
         return None
 
     def extract_campaigns(self, response) -> List[Campaign]:
-        """Offers stated on a collection page.
-
-        The product JSON carries no campaign text, so campaigns come only
-        from the HTML offer pages.
-        """
+        """Offers stated on a collection page."""
         if self._json(response) is not None:
-            return []  # a JSON listing has no promotional copy
+            return []
 
-        # AllBeauty states its offers as LINKS to collections ("At Least 30%
-        # off", "Extra 5% off ... Use Code: EXTRA5"), not as headings or
-        # banner text. Scanning only headings found nothing on a site running
-        # ten live campaigns, so the link scan runs first.
         campaigns = self._scan_offer_links(response)
         seen = {c.promotion_text for c in campaigns}
 
@@ -478,11 +366,6 @@ class AllBeautyAdapter(RetailerAdapter):
                 continue
             if not is_confident_offer(text):
                 continue
-            # A bare discount tier ("Save 12%") is a shop-by-saving filter
-            # or a per-card badge, not a campaign. Recorded as one -- and
-            # these scans have no scope to give it but site-wide -- it
-            # attaches to every product found, which is how a product
-            # discounted 29% came to carry "At Least 70% Off".
             if is_browse_facet(text, url):
                 continue
             seen.add(text)
@@ -491,8 +374,6 @@ class AllBeautyAdapter(RetailerAdapter):
                     retailer=self.display_name,
                     promotion_text=text,
                     promotion_type=classify_promotion(text),
-                    # a heading on an offers page names one section of it
-                    # ("UP TO 60% OFF FRAGRANCE"), not the whole shop
                     scope=SCOPE_UNRESOLVED,
                     scope_value=None,
                     promo_code=extract_promo_code(text),

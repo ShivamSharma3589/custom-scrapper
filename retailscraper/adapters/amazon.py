@@ -1,31 +1,4 @@
-"""Amazon UK adapter.
-
-The crawl works; the data does not, from a non-UK IP -- and that distinction
-shapes this whole adapter.
-
-**Amazon prices by the visitor's location, not by the domain.** Developed
-from India, every price came back as `INR 4,239.84`. The `i18n-prefs=GBP`
-cookie fixes the currency, but it has to be a real browser cookie: passed as
-a `Cookie:` header it is silently overridden by the browser's own jar, and
-every run then saw local pricing and read as "Amazon stocks nothing".
-
-Currency is not catalogue. Amazon still varies which offers it shows by
-region, so a UK proxy is what makes the data match what a UK shopper sees.
-Either way this adapter **refuses to emit a record priced in anything but
-GBP**, rather than publishing plausible nonsense.
-
-Verified on the live site: robots.txt permits `/dp/` and `/s?`; a stealth
-browser reaches both and plain HTTP returns a stub; there is NO JSON-LD
-anywhere, so extraction is DOM-class based and will need revisiting when
-Amazon changes its markup.
-
-Two deliberate omissions:
-
-  * the "other sellers" panel is not read -- one ASIN has many merchants at
-    different prices, and the card price is the buy-box price a shopper sees
-  * brand evidence is not treated as strong, because Amazon's brand line is
-    a rendered attribute rather than structured data
-"""
+"""Amazon UK adapter."""
 
 import re
 from datetime import datetime, timezone
@@ -45,13 +18,10 @@ _PRODUCT_URL_RE = re.compile(
     r"^https?://(?:www\.)?amazon\.co\.uk/(?:.*/)?(?:dp|gp/product)/([A-Z0-9]{10})", re.I
 )
 
-#: Currency symbols Amazon renders, mapped to ISO codes. Anything not in here
-#: is treated as "not the currency we asked for" and refused.
 _SYMBOLS = {"£": "GBP", "GBP": "GBP", "$": "USD", "€": "EUR", "INR": "INR", "₹": "INR"}
 
 _AMOUNT_RE = re.compile(r"([\d][\d,]*(?:\.\d{1,2})?)")
 
-#: A card with no buy box: Amazon shows only third-party offers for it.
 _NO_BUY_BOX_RE = re.compile(r"no featured offers? available", re.IGNORECASE)
 
 
@@ -63,33 +33,22 @@ class AmazonAdapter(RetailerAdapter):
     domain = "www.amazon.co.uk"
     display_name = "Amazon UK"
 
-    #: Amazon publishes no sitemap in robots.txt; discovery is search.
     sitemap_urls: List[str] = []
 
-    # Search results carry no category we can rely on.
     supports_categories = False
 
-    #: The only currency this adapter will publish. A record priced in
-    #: anything else is refused rather than converted or relabelled.
     EXPECTED_CURRENCY = "GBP"
 
-    #: Search results per page, as Amazon renders them.
     listing_page_size = 60
 
     def __init__(self) -> None:
-        # counted so a run that returns nothing can say why
         self.wrong_currency_seen = 0
         self.sponsored_skipped = 0
         self.no_buy_box_skipped = 0
         self.currencies_seen: set = set()
 
     def configure_session(self, manager) -> None:
-        """A stealth browser asking Amazon for sterling.
-
-        `i18n-prefs` must be a real browser cookie -- as a `Cookie:` header
-        the browser's own jar overrides it. Add
-        `proxy="http://user:pass@endpoint:port"` here for a UK IP.
-        """
+        """A stealth browser asking Amazon for sterling."""
         from scrapling.fetchers import AsyncStealthySession
 
         manager.add(
@@ -117,22 +76,10 @@ class AmazonAdapter(RetailerAdapter):
         """The homepage. Amazon challenges a cold session's first navigation."""
         return f"https://{self.domain}/"
 
-    # --- discovery --------------------------------------------------------
-
     def product_listing_urls(
         self, brand: str, categories: Sequence[str], max_pages: int
     ) -> List[ListingPage]:
-        """Beauty search for one brand, asking Amazon to filter to it.
-
-        `i=beauty` stops a query like "MAC" returning laptops.
-        `rh=p_89:<brand>` is Amazon's brand facet.
-
-        Amazon applies that facet only when it recognises the value, and says
-        nothing when it does not -- "Estee Lauder" comes back unfiltered.
-        Those searches fall back to plain-search noise, which is why the
-        brand check below stays regardless, and why per-brand counts vary so
-        widely (143 Tom Ford against 2 Estee Lauder in one sweep).
-        """
+        """Beauty search for one brand, asking Amazon to filter to it."""
         query = re.sub(r"\s+", "+", brand.strip())
         facet = quote(brand.strip())
         return [
@@ -159,8 +106,6 @@ class AmazonAdapter(RetailerAdapter):
         """Unused: discovery reads search result cards, not a URL list."""
         return []
 
-    # --- extraction -------------------------------------------------------
-
     def extract_products_from_listing(
         self, response, brand: Optional[str] = None
     ) -> List[Product]:
@@ -176,7 +121,6 @@ class AmazonAdapter(RetailerAdapter):
             if not asin:
                 continue
 
-            # The title block renders the brand on its own first line.
             title_node = card.css('[data-cy="title-recipe"]')
             if not title_node:
                 continue
@@ -188,12 +132,6 @@ class AmazonAdapter(RetailerAdapter):
             if len(lines) < 2:
                 continue
 
-            # A sponsored placement puts the ad label where the brand goes,
-            # so its first line reads "Sponsored" and the rest is disclosure
-            # text ("You're seeing this ad based on..."). Reading that as a
-            # brand produces records for a brand called "Sponsored". The
-            # listing's real brand is not in this block at all, so the card
-            # is skipped rather than guessed at.
             if lines[0].strip().casefold() == "sponsored":
                 self.sponsored_skipped += 1
                 continue
@@ -202,23 +140,16 @@ class AmazonAdapter(RetailerAdapter):
             if not (vendor and title):
                 continue
 
-            # A search box is not a brand filter: scope the results to the
-            # brand we asked for before anything else.
             if targets and match_brand(vendor, targets) is None:
                 continue
 
             current, currency = self._price(card, ".a-price .a-offscreen")
             was, was_currency = self._price(card, ".a-text-price .a-offscreen")
             if current is None:
-                # "No featured offers available" -- the figure shown is a
-                # marketplace seller's, not the buy-box price. Skipped, but
-                # counted: silent drops look like an unstocked brand.
                 if _NO_BUY_BOX_RE.search(card.get_all_text() or ""):
                     self.no_buy_box_skipped += 1
                 continue
 
-            # THE GUARD. A price in the wrong currency is not a UK price, and
-            # publishing it would understate or overstate every comparison.
             for seen in (currency, was_currency):
                 if seen:
                     self.currencies_seen.add(seen)
@@ -233,10 +164,6 @@ class AmazonAdapter(RetailerAdapter):
             products.append(Product(
                 retailer=self.display_name,
                 brand=vendor,
-                # Amazon renders its brand attribute as a line of text rather
-                # than publishing structured data. Weaker than a JSON-LD
-                # brand, and named so it can be audited; --strict-brand
-                # rejects it, which is the right call for a marketplace.
                 brand_verified_by="amazon_brand_line",
                 product_id=asin,
                 product_title=title,
@@ -295,9 +222,7 @@ class AmazonAdapter(RetailerAdapter):
         return None
 
     def campaign_discovery_urls(self) -> List[str]:
-        """Amazon's deals page. Permitted by robots.txt, unlike `/s?k=`
-        search which it disallows for some agents.
-        """
+        """Amazon's deals page, which robots.txt allows."""
         return [
         "https://www.amazon.co.uk/deals",
         ]
@@ -319,11 +244,6 @@ class AmazonAdapter(RetailerAdapter):
                 continue
             if not is_confident_offer(text):
                 continue
-            # A bare discount tier ("Save 12%") is a shop-by-saving filter
-            # or a per-card badge, not a campaign. Recorded as one -- and
-            # these scans have no scope to give it but site-wide -- it
-            # attaches to every product found, which is how a product
-            # discounted 29% came to carry "At Least 70% Off".
             if is_browse_facet(text, url):
                 continue
             seen.add(text)

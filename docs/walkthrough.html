@@ -507,7 +507,6 @@
         <tr><td class="mono">promotions.py</td><td>Is this string an offer, what kind, and how confident</td><td><span class="tag tag-generic">generic</span></td></tr>
         <tr><td class="mono">keywords.py</td><td>Loads a custom offer vocabulary that replaces the built-in rules</td><td><span class="tag tag-generic">generic</span></td></tr>
         <tr><td class="mono">matching.py</td><td>Same product across two retailers → price gap</td><td><span class="tag tag-generic">generic</span></td></tr>
-        <tr><td class="mono">history.py</td><td>Diff two runs — price moves, offers started and ended</td><td><span class="tag tag-generic">generic</span></td></tr>
         <tr><td class="mono">output.py</td><td>JSON document and per-brand CSVs</td><td><span class="tag tag-generic">generic</span></td></tr>
         <tr><td class="mono">adapters/base.py</td><td>The interface every retailer implements</td><td><span class="tag tag-generic">generic</span></td></tr>
         <tr><td class="mono">adapters/lookfantastic.py</td><td>LF selectors, sitemap discovery, campaign rules</td><td><span class="tag tag-adapter">adapter</span></td></tr>
@@ -563,8 +562,8 @@ class JohnLewisAdapter(RetailerAdapter):
 
   <section class="prose" style="display:flex; flex-direction:column; gap:0.8rem;">
     <h2>Before you change anything</h2>
-    <pre><code>.venv\Scripts\python.exe run_tests.py -q</code></pre>
-    <p>Five suites, no network, about two seconds. They run against captured real pages, so they catch extraction drift as well as logic errors. Green before you start and green after you finish means you didn't break what was working.</p>
+    <pre><code>.venv\Scripts\python.exe run.py --retailer boots --brands Clinique --max-products 15</code></pre>
+    <p>There is no test suite. The check is a small real run: one brand, a handful of products, a minute or two. Do it before you start and again after you finish, and compare the two output files.</p>
   </section>
 
 </div>

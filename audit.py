@@ -1,16 +1,4 @@
-"""Audit collected runs for records that cannot be true.
-
-The test suite proves the code behaves as written. This asks a different
-question of the real output: does any record contradict itself, or the
-retailer it claims to come from?
-
-Deliberately independent of the extraction code -- nothing here imports an
-adapter or reuses a parsing helper, so a mistake shared between extraction
-and its own tests cannot hide from it.
-
-    python audit.py                 # every run under output/
-    python audit.py output/asos     # one retailer
-"""
+"""Audit collected runs for records that cannot be true."""
 
 import json
 import re
@@ -19,16 +7,10 @@ from collections import Counter, defaultdict
 from pathlib import Path
 from typing import Any, Dict, Iterator, List, Tuple
 
-#: Currency every record must be in. A price in anything else is not a UK
-#: price and would silently distort every comparison built on it.
 EXPECTED_CURRENCY = "GBP"
 
-#: How far a stated discount may differ from the one the prices imply, in
-#: percentage points. Retailers round their own percentages.
 DISCOUNT_TOLERANCE = 1.5
 
-#: A price no beauty product plausibly has. Not a hard rule about the world,
-#: a tripwire for a decimal point read from the wrong element.
 MAX_PLAUSIBLE_PRICE = 2000.0
 
 
@@ -74,12 +56,9 @@ def audit_document(path: Path, document: Dict[str, Any]) -> List[str]:
         if row.get("currency") != EXPECTED_CURRENCY:
             fault("wrong currency", f"{title} = {row.get('currency')}")
 
-        # A was-price below the now-price cannot describe a discount; the two
-        # numbers came from unrelated parts of the page.
         if original is not None and current is not None and original < current:
             fault("was-price below now-price", f"{title}: {original} -> {current}")
 
-        # The stated discount must agree with the prices beside it.
         stated = row.get("discount_percent")
         if stated is not None and original and current is not None and original > 0:
             computed = round((original - current) / original * 100, 2)
@@ -87,14 +66,12 @@ def audit_document(path: Path, document: Dict[str, Any]) -> List[str]:
                 fault("discount disagrees with prices",
                       f"{title}: says {stated}%, prices imply {computed:.1f}%")
 
-        # discount_amount must be the actual difference.
         amount = row.get("discount_amount")
         if amount is not None and original is not None and current is not None:
             if abs((original - current) - amount) > 0.02:
                 fault("discount amount wrong",
                       f"{title}: says {amount}, difference is {original - current:.2f}")
 
-        # A discount claimed with no was-price to support it.
         if stated and original is None:
             fault("discount with no was-price", f"{title}: {stated}%")
 
@@ -105,26 +82,21 @@ def audit_document(path: Path, document: Dict[str, Any]) -> List[str]:
         if not row.get("brand_verified_by"):
             fault("brand not attributed to a source", title)
 
-        # The URL must belong to the retailer the record claims.
         domain = (document.get("domain") or "").replace("https://", "").strip("/")
         url = row.get("product_url") or ""
         if domain and domain not in url:
             fault("url does not match the retailer", f"{title}: {url[:60]}")
 
-        # Two records for one product id means deduplication failed.
         pid = row.get("product_id")
         if pid:
             if pid in seen_ids and seen_ids[pid] != url:
                 fault("duplicate product id", f"{pid}: {url[:50]}")
             seen_ids[pid] = url
 
-        # A campaign id on a product that no campaign in this run defines.
         for applied in row.get("applied_campaigns") or []:
             if applied not in campaign_ids:
                 fault("applied campaign not in this run", f"{title}: {applied}")
 
-    # A site-wide campaign applies to everything by definition, so every
-    # product should carry it. Fewer means attachment depended on page order.
     sitewide = [c["campaign_id"] for c in campaigns if c.get("scope") == "sitewide"]
     if sitewide and products:
         for campaign_id in sitewide:

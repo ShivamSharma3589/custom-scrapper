@@ -116,9 +116,9 @@ alongside the other two, with 51 requests failing on `ERR_NAME_NOT_RESOLVED`
 Sequentially:
 
 ```bash
-python run.py --retailer lookfantastic --brands Clinique MAC "Tom Ford" --archive
-python run.py --retailer boots        --brands Clinique MAC "Tom Ford" --archive
-python run.py --retailer johnlewis    --brands Clinique MAC "Tom Ford" --archive
+python run.py --retailer lookfantastic --brands Clinique MAC "Tom Ford"
+python run.py --retailer boots        --brands Clinique MAC "Tom Ford"
+python run.py --retailer johnlewis    --brands Clinique MAC "Tom Ford"
 ```
 
 A full seven-brand pass is roughly an hour per retailer, so a nightly job
@@ -207,22 +207,6 @@ python spotcheck.py --retailer lookfantastic --urls "https://www.lookfantastic.c
 Open the same URLs in a browser and compare. This is the only way to catch
 extraction that is confidently wrong, which internal validation cannot do on
 its own.
-
-### Tests
-
-```bash
-python run_tests.py          # everything
-python run_tests.py -q       # summary only
-```
-
-Five suites, all offline against saved fixtures, so they send no requests and
-run in seconds. Exit code is non-zero if anything regressed -- run this after
-every change.
-
-The fixtures in `tests/fixtures/` are genuine captured pages covering the
-three layouts that behave differently (discounted single-variant, discounted
-multi-variant, and full-price). They let extraction be re-checked after any
-change without sending a request.
 
 ## Running on a schedule
 
@@ -429,7 +413,6 @@ api.py                     HTTP API over the scraper
 queue_worker.py            runs queued scrapes one at a time
 spotcheck.py               live verification tool
 audit.py                   independent check of what was published
-run_tests.py               run every test suite
 retailscraper/
   models.py                Product, Campaign, RejectedRecord
   normalize.py             price parsing, URL canonicalisation, text cleanup

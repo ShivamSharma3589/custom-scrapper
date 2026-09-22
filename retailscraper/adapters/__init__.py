@@ -1,8 +1,4 @@
-"""Retailer adapters.
-
-Importing this package makes the built-in adapters available through the
-registry in `base`.
-"""
+"""Retailer adapters."""
 
 from .base import RetailerAdapter, available_adapters, get_adapter, register
 from . import lookfantastic  # noqa: F401  (import registers the adapter)

@@ -1,11 +1,4 @@
-"""A one-at-a-time queue for scrape jobs.
-
-Browser crawls starve each other when they run together -- three at once
-turned a 54-minute run into 30 hours. So the API accepts every request
-straight away and this runs them in order.
-
-The queue is in memory. A restart drops whatever was waiting; ask again.
-"""
+"""A one-at-a-time queue for scrape jobs."""
 
 import subprocess
 import threading
@@ -17,21 +10,16 @@ from typing import Any, Dict, List, Optional
 
 HERE = Path(__file__).resolve().parent
 
-#: Jobs waiting to start, oldest first.
 _pending: deque = deque()
 
-#: The job running right now, or None.
 _current: Optional[Dict[str, Any]] = None
 
-#: Recently finished jobs. Capped -- the folders on disk are the real record.
 _finished: deque = deque(maxlen=100)
 
-#: Guards the three above, so the worker and the API never clash.
 _lock = threading.Lock()
 
 _worker: Optional[threading.Thread] = None
 
-#: The running child, so a stop request can reach it.
 _process: Optional[subprocess.Popen] = None
 
 
@@ -101,12 +89,7 @@ def cancel(job_id: str) -> bool:
 
 
 def stop_running(clear_queue: bool = False) -> Optional[Dict[str, Any]]:
-    """Stop the crawl in progress, and optionally drop what is waiting.
-
-    The lock is cleared here because terminate() on Windows kills the process
-    outright -- run.py's cleanup never runs, and the stale lock would block
-    that retailer for the next six hours.
-    """
+    """Stop the crawl in progress, and optionally drop what is waiting."""
     with _lock:
         job = _current
         process = _process
@@ -168,7 +151,6 @@ def _run_queue() -> None:
 
         with _lock:
             _current["exit_code"] = code
-            # Same exit codes as run.py.
             _current["status"] = {
                 0: "ok", 1: "failed", 2: "failed", 3: "skipped",
             }.get(code, "failed")

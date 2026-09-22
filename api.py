@@ -1,19 +1,4 @@
-"""HTTP API over the scraper.
-
-    uvicorn api:app --host 0.0.0.0 --port 8000
-
-A scrape takes 1-40 minutes, longer than an HTTP request lives, so POST
-/scrape queues the job and hands back an id. The GETs read the results.
-Asking twice for the same retailer gets a 409, not a second crawl.
-
-    POST /scrape                {"retailer": "boots", "brands": ["Clinique"]}
-    GET  /runs/{run_id}         status and counts
-    GET  /runs/{run_id}/products
-    GET  /runs/{run_id}/campaigns
-    GET  /runs/{run_id}/log
-    GET  /runs                  every run, newest first
-    GET  /retailers             the adapters and what each supports
-"""
+"""HTTP API over the scraper."""
 
 import json
 import sys
@@ -60,14 +45,8 @@ class ScrapeRequest(BaseModel):
     )
 
 
-# --- reading what the scraper wrote ---------------------------------------
-
 def _runs() -> List[Path]:
-    """Every run's manifest file, newest first.
-
-    A manifest lives at `<retailer>/manifest/<timestamp>.json`, so the list of
-    manifests is the list of runs, and the filename is the run's timestamp.
-    """
+    """Every run's manifest file, newest first."""
     return sorted(OUTPUT.glob("*/manifest/*.json"),
                   key=lambda p: p.stem, reverse=True)
 
@@ -87,11 +66,7 @@ def _find_run(run_id: str) -> Path:
 
 
 def _records(manifest_path: Path, key: str) -> List[Dict[str, Any]]:
-    """Gather `products`, `campaigns` or `rejected` from one run's files.
-
-    A run's files are the ones sharing its timestamp, spread across the
-    retailer's brand folders.
-    """
+    """Gather `products`, `campaigns` or `rejected` from one run's files."""
     root = manifest_path.parent.parent
     stamp = manifest_path.stem
 
@@ -106,7 +81,6 @@ def _records(manifest_path: Path, key: str) -> List[Dict[str, Any]]:
             continue
         for row in payload.get(key) or []:
             if key == "campaigns":
-                # Campaigns repeat in every brand's file; keep one of each.
                 seen.setdefault(row.get("campaign_id"), row)
             else:
                 rows.append(row)
@@ -123,8 +97,6 @@ def _is_running(retailer_key: str) -> Optional[str]:
     except OSError:
         return "unknown"
 
-
-# --- endpoints -------------------------------------------------------------
 
 @app.get("/retailers")
 def list_retailers() -> List[Dict[str, Any]]:
@@ -158,7 +130,6 @@ def start_scrape(request: ScrapeRequest) -> Dict[str, Any]:
 
     key = retailer_folder_name(adapter)
 
-    # Asking twice for the same retailer is a duplicate, not a second crawl.
     existing = queue_worker.queued_for(key)
     if existing:
         raise HTTPException(409, {
@@ -192,7 +163,6 @@ def start_scrape(request: ScrapeRequest) -> Dict[str, Any]:
     if request.refusal_limit is not None:
         command += ["--refusal-limit", str(request.refusal_limit)]
 
-    # Queued, not started: two browser crawls at once slow each other down.
     job = queue_worker.submit(key, adapter.display_name, command)
     return {
         **job,
@@ -302,8 +272,6 @@ def health() -> Dict[str, Any]:
     }
 
 
-# --- the queue -------------------------------------------------------------
-
 @app.get("/queue")
 def get_queue() -> Dict[str, Any]:
     """What is running, what is waiting, and what finished recently."""
@@ -322,11 +290,7 @@ def cancel_job(job_id: str) -> Dict[str, Any]:
 def stop_current(clear_queue: bool = Query(
     False, description="Also drop everything still waiting.")
 ) -> Dict[str, Any]:
-    """Stop the crawl in progress.
-
-    Whatever it already wrote to disk stays. There is no manifest, which is
-    how you tell the run did not finish.
-    """
+    """Stop the crawl in progress."""
     stopped = queue_worker.stop_running(clear_queue=clear_queue)
     if stopped is None:
         return {"stopped": None, "note": "nothing was running"}

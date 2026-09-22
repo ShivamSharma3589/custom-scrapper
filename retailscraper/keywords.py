@@ -1,19 +1,4 @@
-"""Loading a custom offer vocabulary from a file.
-
-The built-in rules in `promotions.py` know retail wording -- "25% off",
-"buy 2 get 1". A different vertical uses different language: a betting site
-says "free spins", "no deposit", "5x wager".
-
-A keyword file REPLACES that vocabulary rather than extending it, so only
-your list is used and nothing quietly widens it.
-
-Two formats: plain text one pattern per line with `#` comments, or JSON as
-`{"name": ..., "keywords": [...]}`.
-
-Each keyword is a regular expression, matched case-insensitively. A pattern
-of ordinary words is wrapped in word boundaries, so "bonus" does not match
-"bonuses".
-"""
+"""Loading a custom offer vocabulary from a file."""
 
 import json
 import re
@@ -21,19 +6,11 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import List, Optional, Sequence
 
-# Characters that mean the author is writing a regex rather than a phrase.
-# A pattern containing any of these is used verbatim; a plain phrase gets
-# word boundaries added so it matches whole words.
 _REGEX_CHARS = set(r"[](){}*+?|^$\.")
 
 
 class KeywordFileError(ValueError):
-    """A keyword file could not be read, or holds an invalid pattern.
-
-    Raised rather than skipped: a typo in a keyword file would silently
-    scrape nothing, and a run that finds no offers because of a broken
-    pattern looks exactly like a run against a site with no offers.
-    """
+    """A keyword file could not be read, or holds an invalid pattern."""
 
 
 @dataclass(frozen=True)
@@ -53,20 +30,7 @@ class KeywordSet:
 
 
 def _as_pattern(keyword: str) -> str:
-    """Turn one keyword into a regex fragment.
-
-    A plain phrase gets word boundaries; anything with regex syntax in it is
-    trusted as written, so "bet .* get" and "[0-9]+x wager" behave as the
-    author intended.
-
-    A boundary is only added on a side that actually starts or ends with a
-    word character. `\\b` asserts a word/non-word transition, so "20%" wrapped
-    as `\\b20%\\b` can never match: the trailing boundary needs a word
-    character straight after the "%", and real copy reads "20% off". The
-    pattern still compiles, so validation cannot catch it -- it would just
-    silently match nothing, which looks exactly like a site running no
-    promotions.
-    """
+    """Turn one keyword into a regex fragment."""
     keyword = keyword.strip()
     if any(char in _REGEX_CHARS for char in keyword):
         return keyword
@@ -78,12 +42,7 @@ def _as_pattern(keyword: str) -> str:
 
 
 def compile_keywords(keywords: Sequence[str], name: str = "custom") -> KeywordSet:
-    """Compile a list of keywords into a KeywordSet.
-
-    Every pattern is validated individually so the error names the keyword
-    that is broken, rather than reporting a failure in one long combined
-    expression that nobody can read.
-    """
+    """Compile a list of keywords into a KeywordSet."""
     cleaned = [k.strip() for k in keywords if k and k.strip()]
     if not cleaned:
         raise KeywordFileError(f"keyword set {name!r} is empty")
