@@ -6,6 +6,7 @@ from datetime import datetime, timezone
 from typing import Any, Dict, Iterable, List, Optional, Sequence
 from urllib.parse import parse_qs, urlparse
 
+from config import first_proxy
 from ..models import (
     SCOPE_BRAND,
     SCOPE_CATEGORY,
@@ -63,10 +64,11 @@ class LookfantasticAdapter(RetailerAdapter):
         """Plain HTTP by default, plus a lazily-started browser for listings."""
         from scrapling.fetchers import AsyncDynamicSession, FetcherSession
 
-        manager.add("default", FetcherSession(), default=True)
+        self.add_proxied_sessions(manager, lambda proxy: FetcherSession(proxy=proxy))
         manager.add(
             self.listing_session_id,
-            AsyncDynamicSession(headless=True, network_idle=True, timeout=90_000),
+            AsyncDynamicSession(headless=True, network_idle=True, timeout=90_000,
+                                proxy=first_proxy()),
             lazy=True,
         )
 
@@ -238,7 +240,8 @@ class LookfantasticAdapter(RetailerAdapter):
         from scrapling.fetchers import Fetcher
 
         def locations(url: str) -> List[str]:
-            body = Fetcher.get(url, stealthy_headers=True, timeout=60).body
+            body = Fetcher.get(url, stealthy_headers=True, timeout=60,
+                               proxy=first_proxy()).body
             if body[:2] == b"\x1f\x8b":
                 body = gzip.decompress(body)
             return re.findall(r"<loc>\s*([^<\s]+)\s*</loc>", body.decode("utf-8", "replace"))

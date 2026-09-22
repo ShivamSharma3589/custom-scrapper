@@ -10,6 +10,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from scrapling.fetchers import Fetcher  # noqa: E402
 
+from config import first_proxy
 from retailscraper.adapters.base import get_adapter  # noqa: E402
 from retailscraper.validation import validate  # noqa: E402
 
@@ -59,7 +60,8 @@ def main(argv=None) -> int:
     print(f"Spot-checking {len(urls)} page(s) against {adapter.display_name} live.\n")
 
     for index, url in enumerate(urls, start=1):
-        response = Fetcher.get(url, stealthy_headers=True, follow_redirects=True)
+        response = Fetcher.get(url, stealthy_headers=True, follow_redirects=True,
+                               proxy=first_proxy())
         print(f"[{index}/{len(urls)}] HTTP {response.status}  {url}")
 
         if response.status != 200:

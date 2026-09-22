@@ -11,6 +11,7 @@ from typing import List
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
+from config import NO_PROXIES, PROXY_URLS
 from retailscraper.adapters.base import available_adapters, get_adapter
 from retailscraper.keywords import KeywordFileError, describe, load_keywords
 from retailscraper.validation import (
@@ -150,6 +151,10 @@ def main(argv=None) -> int:
     if not args.brands and not args.campaigns_only:
         print("error: --brands is required unless you pass --campaigns-only",
               file=sys.stderr)
+        return 2
+
+    if not PROXY_URLS:
+        print(f"error: {NO_PROXIES}", file=sys.stderr)
         return 2
 
     adapter = get_adapter(args.retailer)

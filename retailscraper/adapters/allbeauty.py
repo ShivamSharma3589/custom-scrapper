@@ -5,6 +5,7 @@ import re
 from datetime import datetime, timezone
 from typing import Any, Dict, Iterable, List, Optional, Sequence
 
+from config import first_proxy
 from ..models import SCOPE_SITEWIDE, SCOPE_UNRESOLVED, Campaign, Product
 from ..normalize import canonical_url, clean_text, extract_promo_code, strip_call_to_action
 from ..promotions import (
@@ -23,12 +24,6 @@ _PAGE_SIZE = 250
 _SHOPIFY_CURRENCY_RE = re.compile(
     r'Shopify\.currency\s*=\s*\{[^}]*"active"\s*:\s*"([A-Z]{3})"'
 )
-
-_PROBE_USER_AGENT = (
-    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
-    "(KHTML, like Gecko) Chrome/124.0 Safari/537.36"
-)
-
 
 @register
 class AllBeautyAdapter(RetailerAdapter):
@@ -76,18 +71,15 @@ class AllBeautyAdapter(RetailerAdapter):
         """Plain HTTP. There is no JavaScript to run and no bot wall."""
         from scrapling.fetchers import FetcherSession
 
-        manager.add("default", FetcherSession())
+        self.add_proxied_sessions(manager, lambda proxy: FetcherSession(proxy=proxy))
 
     def prepare(self, brands: Sequence[str]) -> List[str]:
         """Confirm the storefront is still quoting sterling."""
-        import urllib.request
+        from scrapling.fetchers import Fetcher
 
-        request = urllib.request.Request(
-            f"https://{self.domain}/",
-            headers={"User-Agent": _PROBE_USER_AGENT},
-        )
         try:
-            html = urllib.request.urlopen(request, timeout=60).read().decode(
+            html = Fetcher.get(f"https://{self.domain}/", stealthy_headers=True,
+                               timeout=60, proxy=first_proxy()).body.decode(
                 "utf-8", "replace"
             )
         except Exception:

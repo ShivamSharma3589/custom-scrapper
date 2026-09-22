@@ -51,26 +51,24 @@ class AmazonAdapter(RetailerAdapter):
         """A stealth browser asking Amazon for sterling."""
         from scrapling.fetchers import AsyncStealthySession
 
-        manager.add(
-            "default",
-            AsyncStealthySession(
-                headless=True,
-                google_search=True,
-                network_idle=True,
-                timeout=120_000,
-                max_pages=2,
-                locale="en-GB",
-                cookies=[
-                    {"name": "i18n-prefs", "value": "GBP",
-                     "domain": ".amazon.co.uk", "path": "/"},
-                    {"name": "lc-acbuk", "value": "en_GB",
-                     "domain": ".amazon.co.uk", "path": "/"},
-                ],
-                extra_headers={
-                    "Accept-Language": "en-GB,en;q=0.9",
-                },
-            ),
-        )
+        self.add_proxied_sessions(manager, lambda proxy: AsyncStealthySession(
+            headless=True,
+            google_search=True,
+            network_idle=True,
+            timeout=120_000,
+            max_pages=2,
+            locale="en-GB",
+            proxy=proxy,
+            cookies=[
+                {"name": "i18n-prefs", "value": "GBP",
+                 "domain": ".amazon.co.uk", "path": "/"},
+                {"name": "lc-acbuk", "value": "en_GB",
+                 "domain": ".amazon.co.uk", "path": "/"},
+            ],
+            extra_headers={
+                "Accept-Language": "en-GB,en;q=0.9",
+            },
+        ))
 
     def warmup_url(self) -> Optional[str]:
         """The homepage. Amazon challenges a cold session's first navigation."""

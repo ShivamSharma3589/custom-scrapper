@@ -53,14 +53,12 @@ class NextAdapter(RetailerAdapter):
         """A session whose TLS handshake Next trusts."""
         from scrapling.fetchers import FetcherSession
 
-        manager.add(
-            "default",
-            FetcherSession(
-                impersonate=_IMPERSONATE,
-                stealthy_headers=True,
-                timeout=90,
-            ),
-        )
+        self.add_proxied_sessions(manager, lambda proxy: FetcherSession(
+            impersonate=_IMPERSONATE,
+            stealthy_headers=True,
+            timeout=90,
+            proxy=proxy,
+        ))
 
     @classmethod
     def _brand_slug(cls, brand: str) -> str:

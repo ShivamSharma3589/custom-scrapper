@@ -31,7 +31,7 @@ from ..promotions import (
     is_confident_offer,
 )
 from .base import ListingPage, RetailerAdapter, register
-from config import PROXY_URLS
+from config import first_proxy
 
 _PRODUCT_URL_RE = re.compile(
     r"^https?://(?:www\.)?johnlewis\.com/(?:[a-z0-9-]+/)+p(\d+)/?$", re.I
@@ -125,10 +125,10 @@ class JohnLewisAdapter(RetailerAdapter):
         self._offer_depth: Dict[str, int] = {}
 
     def configure_session(self, manager) -> None:
-        """A stealth browser for everything, plus a spare per backup proxy."""
+        """A stealth browser per proxy: the first fetches, the rest are spares."""
         from scrapling.fetchers import AsyncStealthySession
 
-        def browser(proxy: Optional[str] = None) -> AsyncStealthySession:
+        def browser(proxy: str) -> AsyncStealthySession:
             return AsyncStealthySession(
                 headless=True,
                 google_search=True,
@@ -138,12 +138,7 @@ class JohnLewisAdapter(RetailerAdapter):
                 proxy=proxy,
             )
 
-        manager.add("default", browser())
-        self.backup_session_ids = []
-        for number, proxy in enumerate(PROXY_URLS, 1):
-            sid = f"proxy{number}"
-            manager.add(sid, browser(proxy), lazy=True)
-            self.backup_session_ids.append(sid)
+        self.add_proxied_sessions(manager, browser)
 
     BRAND_SLUG_OVERRIDES = {
         "jo malone": "jo-malone-london",
@@ -240,7 +235,7 @@ class JohnLewisAdapter(RetailerAdapter):
         wanted = set(wanted)
         try:
             response = StealthyFetcher.fetch(
-                _BRAND_INDEX, headless=True, network_idle=True
+                _BRAND_INDEX, headless=True, network_idle=True, proxy=first_proxy()
             )
             html = getattr(response, "html_content", None) or str(response)
         except Exception:

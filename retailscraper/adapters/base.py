@@ -5,6 +5,7 @@ from abc import ABC, abstractmethod
 from dataclasses import dataclass
 from typing import Dict, Iterable, List, Optional, Sequence, TYPE_CHECKING
 
+from config import NO_PROXIES, PROXY_URLS
 from ..models import Campaign, Product
 
 
@@ -79,7 +80,23 @@ class RetailerAdapter(ABC):
         """Register the fetch session this retailer needs."""
         from scrapling.fetchers import FetcherSession
 
-        manager.add("default", FetcherSession())
+        self.add_proxied_sessions(manager, lambda proxy: FetcherSession(proxy=proxy))
+
+    def add_proxied_sessions(self, manager, build) -> None:
+        """One session per Webshare proxy: the first fetches, the rest are spares.
+
+        Nothing is ever fetched from this machine's own IP. When a proxy starts
+        refusing, the spider swaps in the next one.
+        """
+        if not PROXY_URLS:
+            raise RuntimeError(NO_PROXIES)
+
+        manager.add("default", build(PROXY_URLS[0]), default=True)
+        self.backup_session_ids = []
+        for number, proxy in enumerate(PROXY_URLS[1:], start=2):
+            sid = f"proxy{number}"
+            manager.add(sid, build(proxy), lazy=True)
+            self.backup_session_ids.append(sid)
 
     def known_categories(self) -> List[str]:
         """Category names this adapter can look products up by."""

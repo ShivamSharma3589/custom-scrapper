@@ -6,6 +6,7 @@ from datetime import datetime, timezone
 from typing import Any, Dict, Iterable, List, Optional, Sequence
 from urllib.parse import urlsplit
 
+from config import first_proxy
 from ..models import (
     SCOPE_BRAND,
     SCOPE_CATEGORY,
@@ -38,12 +39,6 @@ _LISTING_PAGE_SIZE = 48
 
 _ID_PREFIX_RE = re.compile(r"^[a-z]+", re.IGNORECASE)
 
-_PROBE_USER_AGENT = (
-    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
-    "(KHTML, like Gecko) Chrome/124.0 Safari/537.36"
-)
-
-
 @register
 class MarksAndSpencerAdapter(RetailerAdapter):
     """Extraction rules for marksandspencer.com."""
@@ -69,7 +64,7 @@ class MarksAndSpencerAdapter(RetailerAdapter):
         """Plain HTTP: product pages carry full JSON-LD without a browser."""
         from scrapling.fetchers import FetcherSession
 
-        manager.add("default", FetcherSession())
+        self.add_proxied_sessions(manager, lambda proxy: FetcherSession(proxy=proxy))
 
     @classmethod
     def _brand_slug(cls, brand: str) -> str:
@@ -96,30 +91,29 @@ class MarksAndSpencerAdapter(RetailerAdapter):
 
     def prepare(self, brands: Sequence[str]) -> List[str]:
         """Check each brand has a landing page before the crawl starts."""
-        import urllib.error
-        import urllib.request
+        from scrapling.fetchers import Fetcher
 
         warnings: List[str] = []
         for brand in brands:
             url = f"https://{self.domain}/l/beauty/{self._brand_slug(brand)}"
-            request = urllib.request.Request(
-                url, method="HEAD", headers={"User-Agent": _PROBE_USER_AGENT}
-            )
             try:
-                urllib.request.urlopen(request, timeout=30).close()
-            except urllib.error.HTTPError as exc:
-                if exc.code == 404:
-                    warnings.append(
-                        f"{self.display_name} has no landing page for "
-                        f"'{brand}' ({url}) -- it does not stock this brand"
-                    )
-                else:
-                    warnings.append(
-                        f"{self.display_name} returned HTTP {exc.code} for "
-                        f"'{brand}' ({url})"
-                    )
-            except Exception:
-                pass
+                status = Fetcher.get(url, stealthy_headers=True, timeout=30,
+                                     proxy=first_proxy()).status
+            except Exception as exc:
+                warnings.append(
+                    f"{self.display_name} could not be reached for '{brand}' ({exc})"
+                )
+                continue
+            if status == 404:
+                warnings.append(
+                    f"{self.display_name} has no landing page for "
+                    f"'{brand}' ({url}) -- it does not stock this brand"
+                )
+            elif status != 200:
+                warnings.append(
+                    f"{self.display_name} returned HTTP {status} for "
+                    f"'{brand}' ({url})"
+                )
         return warnings
 
     def is_product_url(self, url: str) -> bool:

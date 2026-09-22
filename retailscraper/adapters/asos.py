@@ -48,16 +48,14 @@ class AsosAdapter(RetailerAdapter):
         """A browser for everything: plain HTTP hangs rather than failing."""
         from scrapling.fetchers import AsyncStealthySession
 
-        manager.add(
-            "default",
-            AsyncStealthySession(
-                headless=True,
-                google_search=True,
-                network_idle=True,
-                timeout=120_000,
-                max_pages=2,
-            ),
-        )
+        self.add_proxied_sessions(manager, lambda proxy: AsyncStealthySession(
+            headless=True,
+            google_search=True,
+            network_idle=True,
+            timeout=120_000,
+            max_pages=2,
+            proxy=proxy,
+        ))
 
     def product_listing_urls(
         self, brand: str, categories: Sequence[str], max_pages: int

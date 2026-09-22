@@ -105,16 +105,14 @@ class BootsAdapter(RetailerAdapter):
         """Use a stealth browser session, kept alive across the whole crawl."""
         from scrapling.fetchers import AsyncStealthySession
 
-        manager.add(
-            "default",
-            AsyncStealthySession(
-                headless=True,
-                google_search=True,
-                network_idle=True,
-                timeout=120_000,
-                max_pages=2,
-            ),
-        )
+        self.add_proxied_sessions(manager, lambda proxy: AsyncStealthySession(
+            headless=True,
+            google_search=True,
+            network_idle=True,
+            timeout=120_000,
+            max_pages=2,
+            proxy=proxy,
+        ))
 
     @staticmethod
     def _brand_slug(brand: str) -> str:
