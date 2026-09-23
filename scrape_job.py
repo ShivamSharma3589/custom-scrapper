@@ -23,6 +23,7 @@ RETAILERS = [
     # "johnlewis",
     # "allbeauty",
     # "asos",
+    # "marksandspencer",
     # "next",
     # "amazon",
 ]

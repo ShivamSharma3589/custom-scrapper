@@ -149,12 +149,7 @@ class LookfantasticAdapter(RetailerAdapter):
         return selected
 
     def expected_product_count(self, brands: Sequence[str]) -> Optional[int]:
-        """How many products the sitemap offered for these brands.
-
-        Lookfantastic states no per-brand total, so this counts what discovery
-        found. It catches a pipeline that stops collecting; it cannot see a
-        product whose URL omits the brand name.
-        """
+        """How many products the sitemap offered for these brands"""
         totals = [len(self._candidates[b]) for b in brands if b in self._candidates]
         return sum(totals) if totals else None
 

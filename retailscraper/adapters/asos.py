@@ -43,6 +43,7 @@ class AsosAdapter(RetailerAdapter):
     def __init__(self) -> None:
         self.wrong_currency_pages = 0
         self.currencies_seen: set = set()
+        self._capped: set = set()
 
     def configure_session(self, manager) -> None:
         """A browser for everything: plain HTTP hangs rather than failing."""
@@ -57,19 +58,42 @@ class AsosAdapter(RetailerAdapter):
             proxy=proxy,
         ))
 
+    MAX_LIST_PAGES = 40
+
     def product_listing_urls(
         self, brand: str, categories: Sequence[str], max_pages: int
     ) -> List[ListingPage]:
-        """Paginated search results for one brand."""
+        """The first page of search results. The rest follow it."""
         query = re.sub(r"\s+", "+", brand.strip())
-        return [
-            ListingPage(
-                url=f"https://{self.domain}/search/?q={query}&page={page}",
-                brand=brand,
-                category=None,
-            )
-            for page in range(1, max_pages + 1)
-        ]
+        return [ListingPage(url=f"https://{self.domain}/search/?q={query}&page=1",
+                            brand=brand, category=None)]
+
+    def more_listing_pages(self, response, meta: dict, added: int) -> List[str]:
+        """The next page, while ASOS says there are more results than we have seen."""
+        url = str(meta.get("url") or response.url)
+        if "/search/" not in url:
+            return []
+
+        body = response.body
+        if isinstance(body, bytes):
+            body = body.decode("utf-8", "replace")
+        stated = re.search(r'"itemCount"\s*:\s*(\d+)', body or "")
+        if not stated:
+            return []
+
+        total = int(stated.group(1))
+        page = int((re.search(r"[?&]page=(\d+)", url) or [None, "1"])[1])
+        if page * _PAGE_SIZE >= total:
+            return []
+        if page >= self.MAX_LIST_PAGES:
+            self._capped.add(meta.get("brand") or url)
+            return []
+        return [re.sub(r"([?&]page=)\d+", rf"\g<1>{page + 1}", url)]
+
+    def crawl_warnings(self) -> List[str]:
+        return [f"{brand} has more than {self.MAX_LIST_PAGES * _PAGE_SIZE} "
+                f"search results; the rest were not read"
+                for brand in sorted(self._capped)]
 
     def is_product_url(self, url: str) -> bool:
         return bool(_PRODUCT_URL_RE.match(url.split("?")[0]))
