@@ -20,6 +20,7 @@ from ..normalize import (
     canonical_url,
     clean_text,
     extract_promo_code,
+    fold_accents,
     parse_price,
     percent_off,
 )
@@ -134,15 +135,28 @@ class LookfantasticAdapter(RetailerAdapter):
 
     def select_candidates(self, urls: Iterable[str], brands: Sequence[str]) -> List[str]:
         """Pick sitemap URLs whose slug mentions one of the target brands."""
-        slugs = [self._brand_slug(b) for b in brands]
+        pairs = [(b, self._brand_slug(b)) for b in brands]
         selected = []
         for url in urls:
             if not self.is_product_url(url):
                 continue
             lowered = url.lower()
-            if any(slug in lowered for slug in slugs):
-                selected.append(url)
+            for brand, slug in pairs:
+                if slug and slug in lowered:
+                    self._candidates.setdefault(brand, set()).add(lowered)
+                    selected.append(url)
+                    break
         return selected
+
+    def expected_product_count(self, brands: Sequence[str]) -> Optional[int]:
+        """How many products the sitemap offered for these brands.
+
+        Lookfantastic states no per-brand total, so this counts what discovery
+        found. It catches a pipeline that stops collecting; it cannot see a
+        product whose URL omits the brand name.
+        """
+        totals = [len(self._candidates[b]) for b in brands if b in self._candidates]
+        return sum(totals) if totals else None
 
     def extract_product(self, response, target_brands: Sequence[str] = ()) -> Optional[Product]:
         return self.parse_product(response, str(response.url), target_brands)
@@ -233,6 +247,7 @@ class LookfantasticAdapter(RetailerAdapter):
     def __init__(self) -> None:
         self.listed_offer_pages: List[str] = []
         self._capped_offers: set = set()
+        self._candidates: Dict[str, set] = {}
 
     def prepare(self, brands: Sequence[str]) -> List[str]:
         """Read every offer and sale page from the list sitemap."""
@@ -428,13 +443,13 @@ class LookfantasticAdapter(RetailerAdapter):
             return None, "unverified"
 
         path = url.split("?")[0].lower()
-        title_folded = title.casefold()
+        title_folded = fold_accents(title).casefold()
 
         for brand in target_brands:
             slug = cls._brand_slug(brand)
             if not slug:
                 continue
-            if not title_folded.startswith(brand.strip().casefold()):
+            if not title_folded.startswith(fold_accents(brand).strip().casefold()):
                 continue
             if f"/{slug}-" in path or f"/{slug}/" in path:
                 return brand, "title_and_url"

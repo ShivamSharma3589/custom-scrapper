@@ -25,6 +25,7 @@ _SHOPIFY_CURRENCY_RE = re.compile(
     r'Shopify\.currency\s*=\s*\{[^}]*"active"\s*:\s*"([A-Z]{3})"'
 )
 
+
 @register
 class AllBeautyAdapter(RetailerAdapter):
     """Extraction rules for allbeauty.com (Shopify)."""
@@ -62,10 +63,13 @@ class AllBeautyAdapter(RetailerAdapter):
 
     MAX_OFFER_PAGES = 20
 
+    MAX_LIST_PAGES = 40
+
     EXPECTED_CURRENCY = "GBP"
 
     def __init__(self) -> None:
         self.storefront_currency = self.EXPECTED_CURRENCY
+        self._capped_brands: set = set()
 
     def configure_session(self, manager) -> None:
         """Plain HTTP. There is no JavaScript to run and no bot wall."""
@@ -114,19 +118,33 @@ class AllBeautyAdapter(RetailerAdapter):
     def product_listing_urls(
         self, brand: str, categories: Sequence[str], max_pages: int
     ) -> List[ListingPage]:
-        """Paginated JSON for one brand's collection."""
+        """The first page of one brand's collection. The rest follow it."""
         handle = self._collection(brand)
-        return [
-            ListingPage(
-                url=(
-                    f"https://{self.domain}/collections/{handle}/products.json"
-                    f"?limit={_PAGE_SIZE}&page={page}"
-                ),
-                brand=brand,
-                category=None,
-            )
-            for page in range(1, max_pages + 1)
-        ]
+        return [ListingPage(
+            url=(f"https://{self.domain}/collections/{handle}/products.json"
+                 f"?limit={_PAGE_SIZE}&page=1"),
+            brand=brand,
+            category=None,
+        )]
+
+    def more_listing_pages(self, response, meta: dict, added: int) -> List[str]:
+        """The next page, while the last one came back full."""
+        url = str(meta.get("url") or response.url)
+        if "/products.json" not in url:
+            return []
+        payload = self._json(response)
+        if not payload or len(payload.get("products") or []) < _PAGE_SIZE:
+            return []
+        page = int((re.search(r"[?&]page=(\d+)", url) or [None, "1"])[1])
+        if page >= self.MAX_LIST_PAGES:
+            self._capped_brands.add(meta.get("brand") or url)
+            return []
+        return [re.sub(r"([?&]page=)\d+", rf"\g<1>{page + 1}", url)]
+
+    def crawl_warnings(self) -> List[str]:
+        return [f"{brand} has more than {self.MAX_LIST_PAGES * _PAGE_SIZE} products; "
+                f"the rest were not read"
+                for brand in sorted(self._capped_brands)]
 
     def campaign_discovery_urls(self) -> List[str]:
         return [f"https://{self.domain}{path}" for path in self.CAMPAIGN_HUB_PATHS]

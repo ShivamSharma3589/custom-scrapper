@@ -23,6 +23,9 @@ _SAVE_RE = re.compile(r"Save\s*[£$€]?\s*([\d.,]+)", re.IGNORECASE)
 
 _BLOCK_MARKER = "Pardon Our Interruption"
 
+_WALL_MARKER = "_Incapsula_Resource"
+_WALL_MAX_CHARS = 20_000
+
 
 @register
 class BootsAdapter(RetailerAdapter):
@@ -206,7 +209,10 @@ class BootsAdapter(RetailerAdapter):
             body = response.body.decode("utf-8", "replace")
         except (AttributeError, UnicodeDecodeError):
             return False
-        return _BLOCK_MARKER in body
+        if _BLOCK_MARKER in body:
+            return True
+        return (_WALL_MARKER in body and len(body) < _WALL_MAX_CHARS
+                and "<title" not in body.lower())
 
     def extract_product(
         self, response, target_brands: Sequence[str] = ()

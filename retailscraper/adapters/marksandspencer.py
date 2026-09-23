@@ -39,6 +39,7 @@ _LISTING_PAGE_SIZE = 48
 
 _ID_PREFIX_RE = re.compile(r"^[a-z]+", re.IGNORECASE)
 
+
 @register
 class MarksAndSpencerAdapter(RetailerAdapter):
     """Extraction rules for marksandspencer.com."""
@@ -52,6 +53,8 @@ class MarksAndSpencerAdapter(RetailerAdapter):
     supports_categories = False
 
     confirms_brand_stocking = True
+
+    MAX_LIST_PAGES = 40
 
     BRAND_SLUG_OVERRIDES = {
         "estée lauder": "estee-lauder",
@@ -77,28 +80,59 @@ class MarksAndSpencerAdapter(RetailerAdapter):
     def product_listing_urls(
         self, brand: str, categories: Sequence[str], max_pages: int
     ) -> List[ListingPage]:
-        """The brand's landing page, paginated."""
+        """The brand's landing page. Later pages follow it."""
         slug = self._brand_slug(brand)
-        base = f"https://{self.domain}/l/beauty/{slug}"
-        return [
-            ListingPage(
-                url=base if page == 1 else f"{base}?page={page}",
-                brand=brand,
-                category=None,
-            )
-            for page in range(1, max_pages + 1)
-        ]
+        return [ListingPage(url=f"https://{self.domain}/l/beauty/{slug}",
+                            brand=brand, category=None)]
+
+    def more_listing_pages(self, response, meta: dict, added: int) -> List[str]:
+        """The next page, while M&S says there are more products than we have seen."""
+        url = str(meta.get("url") or response.url)
+        node = self._results_node(response)
+        if not node:
+            return []
+
+        shown = len(node.get("products") or [])
+        total = node.get("totalItems")
+        paging = node.get("pagination") or {}
+        offset = paging.get("offset") or 0
+        if not isinstance(total, int) or offset + shown >= total:
+            return []
+
+        page = int((re.search(r"[?&]page=(\d+)", url) or [None, "1"])[1])
+        if page >= self.MAX_LIST_PAGES:
+            self._capped.add(meta.get("brand") or url)
+            return []
+        base = url.split("?")[0]
+        return [f"{base}?page={page + 1}"]
+
+    def expected_product_count(self, brands: Sequence[str]) -> Optional[int]:
+        """What M&S itself said it lists for these brands."""
+        totals = [self._stated_totals[b] for b in brands if b in self._stated_totals]
+        return sum(totals) if totals else None
+
+    def crawl_warnings(self) -> List[str]:
+        return [f"{brand} has more than {self.MAX_LIST_PAGES * _LISTING_PAGE_SIZE} "
+                f"products; the rest were not read" for brand in sorted(self._capped)]
+
+    def __init__(self) -> None:
+        self._stated_totals: Dict[str, int] = {}
+        self._capped: set = set()
 
     def prepare(self, brands: Sequence[str]) -> List[str]:
-        """Check each brand has a landing page before the crawl starts."""
+        """Check each brand has a landing page, and note how many products it claims."""
         from scrapling.fetchers import Fetcher
 
         warnings: List[str] = []
         for brand in brands:
             url = f"https://{self.domain}/l/beauty/{self._brand_slug(brand)}"
             try:
-                status = Fetcher.get(url, stealthy_headers=True, timeout=30,
-                                     proxy=first_proxy()).status
+                page = Fetcher.get(url, stealthy_headers=True, timeout=30,
+                                   proxy=first_proxy())
+                status = page.status
+                node = self._results_node(page) or {}
+                if isinstance(node.get("totalItems"), int):
+                    self._stated_totals[brand] = node["totalItems"]
             except Exception as exc:
                 warnings.append(
                     f"{self.display_name} could not be reached for '{brand}' ({exc})"
@@ -198,24 +232,30 @@ class MarksAndSpencerAdapter(RetailerAdapter):
         return products
 
     @classmethod
-    def _listing_records(cls, response) -> List[Any]:
-        """The product array inside the page's `__NEXT_DATA__`, or empty."""
+    def _results_node(cls, response) -> Optional[Dict[str, Any]]:
+        """The search results block inside the page's `__NEXT_DATA__`."""
         body = response.body
         if isinstance(body, bytes):
             body = body.decode("utf-8", "replace")
         match = _NEXT_DATA_RE.search(body or "")
         if not match:
-            return []
+            return None
         try:
             node: Any = json.loads(match.group(1))
         except (ValueError, TypeError):
-            return []
+            return None
 
         for key in _RESULTS_PATH:
             if not isinstance(node, dict):
-                return []
+                return None
             node = node.get(key)
-        products = (node or {}).get("products") if isinstance(node, dict) else None
+        return node if isinstance(node, dict) else None
+
+    @classmethod
+    def _listing_records(cls, response) -> List[Any]:
+        """The product array inside the page's `__NEXT_DATA__`, or empty."""
+        node = cls._results_node(response) or {}
+        products = node.get("products")
         return products if isinstance(products, list) else []
 
     @classmethod

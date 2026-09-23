@@ -2,6 +2,7 @@
 
 import html
 import re
+import unicodedata
 from typing import Optional, Tuple
 from urllib.parse import urlsplit, urlunsplit
 
@@ -56,6 +57,12 @@ def strip_call_to_action(text: Optional[str]) -> Optional[str]:
     if match.group(1) in ("SHOP ALL", "VIEW ALL") and re.search(r"[a-z]", kept):
         kept = _TRAILING_TABS_RE.sub("", kept)
     return kept.rstrip(" |-–—:,") or text
+
+
+def fold_accents(text: str) -> str:
+    """Strip diacritics so "Estee" and "Estee" compare equal."""
+    decomposed = unicodedata.normalize("NFKD", text)
+    return "".join(ch for ch in decomposed if not unicodedata.combining(ch))
 
 
 def canonical_url(url: str) -> str:

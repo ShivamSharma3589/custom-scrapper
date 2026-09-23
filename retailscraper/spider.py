@@ -229,7 +229,7 @@ class RetailPromotionSpider(SitemapSpider):
 
     async def is_blocked(self, response) -> bool:
         """Note which brand a refused request belonged to, then defer."""
-        blocked = await super().is_blocked(response)
+        blocked = await super().is_blocked(response) or self.adapter.looks_blocked(response)
         if blocked:
             brand = self._brand_for_url(str(response.url))
             self.blocked_by_brand[brand] = self.blocked_by_brand.get(brand, 0) + 1

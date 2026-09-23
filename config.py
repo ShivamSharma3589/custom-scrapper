@@ -24,8 +24,17 @@ NO_PROXIES = (
 )
 
 
-def first_proxy() -> str:
-    """The proxy for a one-off fetch made outside the crawl."""
-    if not PROXY_URLS:
-        raise RuntimeError(NO_PROXIES)
-    return PROXY_URLS[0]
+#: Set ALLOW_DIRECT=true in .env to scrape from this machine's own IP.
+ALLOW_DIRECT = os.getenv("ALLOW_DIRECT", "").strip().lower() in {"1", "true", "yes"}
+
+if ALLOW_DIRECT:
+    PROXY_URLS = []
+
+
+def first_proxy():
+    """The proxy for a one-off fetch, or None when running direct on purpose."""
+    if PROXY_URLS:
+        return PROXY_URLS[0]
+    if ALLOW_DIRECT:
+        return None
+    raise RuntimeError(NO_PROXIES)

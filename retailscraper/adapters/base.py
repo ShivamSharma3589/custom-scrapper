@@ -5,7 +5,7 @@ from abc import ABC, abstractmethod
 from dataclasses import dataclass
 from typing import Dict, Iterable, List, Optional, Sequence, TYPE_CHECKING
 
-from config import NO_PROXIES, PROXY_URLS
+from config import ALLOW_DIRECT, NO_PROXIES, PROXY_URLS
 from ..models import Campaign, Product
 
 
@@ -89,7 +89,11 @@ class RetailerAdapter(ABC):
         refusing, the spider swaps in the next one.
         """
         if not PROXY_URLS:
-            raise RuntimeError(NO_PROXIES)
+            if not ALLOW_DIRECT:
+                raise RuntimeError(NO_PROXIES)
+            manager.add("default", build(None), default=True)
+            self.backup_session_ids = []
+            return
 
         manager.add("default", build(PROXY_URLS[0]), default=True)
         self.backup_session_ids = []
@@ -156,6 +160,10 @@ class RetailerAdapter(ABC):
     def crawl_warnings(self) -> List[str]:
         """Problems noticed during the crawl, for the run summary and manifest."""
         return []
+
+    def looks_blocked(self, response: "Response") -> bool:
+        """True when a 200 response is really the retailer's bot wall."""
+        return False
 
     def warmup_url(self) -> Optional[str]:
         """A throwaway page to fetch first, to establish the session."""

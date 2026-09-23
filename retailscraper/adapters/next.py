@@ -5,6 +5,7 @@ import re
 from datetime import datetime, timezone
 from typing import Any, Dict, Iterable, List, Optional, Sequence
 
+from config import first_proxy
 from ..models import SCOPE_PRODUCT, SCOPE_SITEWIDE, Campaign, Product
 from ..normalize import canonical_url, clean_text, extract_promo_code, percent_off
 from ..promotions import (
@@ -23,8 +24,6 @@ _PRODUCT_LINK_RE = re.compile(
 )
 
 _IMPERSONATE = "safari"
-
-_LISTING_PAGE_SIZE = 10
 
 
 @register
@@ -73,7 +72,8 @@ class NextAdapter(RetailerAdapter):
 
         warnings: List[str] = []
         with FetcherSession(
-            impersonate=_IMPERSONATE, stealthy_headers=True, timeout=60
+            impersonate=_IMPERSONATE, stealthy_headers=True, timeout=60,
+            proxy=first_proxy(),
         ) as session:
             for brand in brands:
                 slug = self._brand_slug(brand)
@@ -241,10 +241,7 @@ class NextAdapter(RetailerAdapter):
 
     def campaign_discovery_urls(self) -> List[str]:
         """Next's sale and clearance hubs."""
-        return [
-        "https://www.next.co.uk/sale",
-        "https://www.next.co.uk/clearance",
-        ]
+        return [f"https://{self.domain}/sale", f"https://{self.domain}/clearance"]
 
     def extract_campaign_directory(self, response) -> List[Campaign]:
         """Every offer linked from a hub page, via the shared scan."""

@@ -1,11 +1,10 @@
 """Generic, retailer-agnostic validation."""
 
 import re
-import unicodedata
 from typing import Callable, List, Optional, Sequence
 
 from .models import Product, RejectedRecord
-from .normalize import percent_off
+from .normalize import fold_accents, percent_off
 
 REASON_MISSING_PRICE = "missing_price"
 REASON_INVALID_DISCOUNT = "invalid_discount"
@@ -127,7 +126,7 @@ KNOWN_BRANDS = [
 
 def canonical_brand(name: str) -> str:
     """Correct a brand name the user typed, if it is a known variant."""
-    key = re.sub(r"[^a-z0-9 ]+", " ", _fold_accents(name).casefold())
+    key = re.sub(r"[^a-z0-9 ]+", " ", fold_accents(name).casefold())
     key = re.sub(r"\s+", " ", key).strip()
     return BRAND_ALIASES.get(key, name)
 
@@ -136,10 +135,10 @@ def suggest_brand(wanted: str, seen: Sequence[str]) -> Optional[str]:
     """The brand from `seen` that `wanted` was most likely meant to be."""
     from difflib import SequenceMatcher
 
-    target = _fold_accents(wanted).casefold()
+    target = fold_accents(wanted).casefold()
     best, best_score = None, 0.0
     for candidate in seen:
-        folded = _fold_accents(candidate).casefold()
+        folded = fold_accents(candidate).casefold()
         if folded == target:
             continue
         score = SequenceMatcher(None, target, folded).ratio()
@@ -148,15 +147,9 @@ def suggest_brand(wanted: str, seen: Sequence[str]) -> Optional[str]:
     return best if best_score >= 0.8 else None
 
 
-def _fold_accents(text: str) -> str:
-    """Strip diacritics so "Estée" and "Estee" compare equal."""
-    decomposed = unicodedata.normalize("NFKD", text)
-    return "".join(ch for ch in decomposed if not unicodedata.combining(ch))
-
-
 def _tokens(brand: str) -> List[str]:
     """Split a brand name into comparable lowercase word tokens."""
-    raw = [t for t in re.split(r"[^a-z0-9]+", _fold_accents(brand).casefold()) if t]
+    raw = [t for t in re.split(r"[^a-z0-9]+", fold_accents(brand).casefold()) if t]
 
     tokens: List[str] = []
     run: List[str] = []

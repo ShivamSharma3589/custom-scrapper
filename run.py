@@ -11,7 +11,7 @@ from typing import List
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
-from config import NO_PROXIES, PROXY_URLS
+from config import ALLOW_DIRECT, NO_PROXIES, PROXY_URLS
 from retailscraper.adapters.base import available_adapters, get_adapter
 from retailscraper.keywords import KeywordFileError, describe, load_keywords
 from retailscraper.validation import (
@@ -154,8 +154,11 @@ def main(argv=None) -> int:
         return 2
 
     if not PROXY_URLS:
-        print(f"error: {NO_PROXIES}", file=sys.stderr)
-        return 2
+        if not ALLOW_DIRECT:
+            print(f"error: {NO_PROXIES}", file=sys.stderr)
+            return 2
+        print("WARNING: ALLOW_DIRECT is set, so this run uses this machine's own "
+              "IP, not a proxy.", file=sys.stderr)
 
     adapter = get_adapter(args.retailer)
 
@@ -354,7 +357,8 @@ def main(argv=None) -> int:
         )
         empty = [b for b in args.brands if found.get(b, 0) == 0] if args.brands else []
 
-        expected_products = adapter.expected_product_count(args.brands)
+        expected_products = (None if args.max_products
+                             else adapter.expected_product_count(args.brands))
 
         status, reason = verdict(
             stats=stats,
