@@ -21,6 +21,7 @@ from retailscraper.validation import (
 )
 from retailscraper.promotions import set_offer_keywords
 from retailscraper.output import build_payload, write_all
+from retailscraper.publish import publish
 from retailscraper.spider import RetailPromotionSpider
 from retailscraper.runs import (
     DEFAULT_REFUSAL_LIMIT,
@@ -408,6 +409,10 @@ def main(argv=None) -> int:
         for path in written:
             print(f"      {path}")
 
+        for warning in publish(payload, manifest, written, paths.root.name):
+            logging.getLogger(__name__).warning(warning)
+            print(f"warning: {warning}", file=sys.stderr)
+
         logging.getLogger(__name__).info("run %s finished: %s", run_id, status)
 
         return 0 if status == STATUS_OK else 1
@@ -418,7 +423,7 @@ def main(argv=None) -> int:
         if partial_writer:
             partial_writer.flush()
             saved = partial_writer.written
-        write_manifest(paths.file("manifest", ".json"), build_manifest(
+        failed = build_manifest(
             run_id=run_id,
             adapter=adapter,
             started_at=started_at,
@@ -434,7 +439,11 @@ def main(argv=None) -> int:
             warnings=prepare_warnings,
             files=[str(paths.file("partial", ".jsonl").relative_to(paths.root))]
                   if saved else [],
-        ))
+        )
+        manifest_path = write_manifest(paths.file("manifest", ".json"), failed)
+
+        for warning in publish({}, failed, [manifest_path], paths.root.name):
+            logging.getLogger(__name__).warning(warning)
         return 2
     finally:
         close_run_log(log_handler)

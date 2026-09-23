@@ -6,9 +6,8 @@
 # need a real browser and will fail without them.
 scrapling[fetchers]==0.4.15
 
-# The HTTP API (api.py). Not needed to run the scraper from the command line.
 fastapi==0.141.1
 uvicorn[standard]==0.52.4
-
-# Reads secrets such as proxy credentials from .env (see config.py).
 python-dotenv==1.2.3
+google-cloud-storage==3.4.1
+google-cloud-bigquery==3.39.0

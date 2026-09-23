@@ -38,3 +38,19 @@ def first_proxy():
     if ALLOW_DIRECT:
         return None
     raise RuntimeError(NO_PROXIES)
+
+
+#: Google Cloud. Leave these empty on a laptop and nothing is uploaded; fill
+#: them in production and every successful run is archived and loaded.
+GCP_PROJECT = os.getenv("GCP_PROJECT", "").strip()
+GCS_BUCKET = os.getenv("GCS_BUCKET", "").strip()
+BQ_DATASET = os.getenv("BQ_DATASET", "").strip()
+
+#: Delete a local file once Cloud Storage confirms it holds a copy.
+DELETE_LOCAL_AFTER_UPLOAD = os.getenv(
+    "DELETE_LOCAL_AFTER_UPLOAD", "true").strip().lower() in {"1", "true", "yes"}
+
+
+def publishing_enabled() -> bool:
+    """True when all three Google Cloud settings are filled in."""
+    return bool(GCP_PROJECT and GCS_BUCKET and BQ_DATASET)
