@@ -1,0 +1,9 @@
+# Shell scripts and .env must keep Unix line endings even when checked out on
+# Windows. A stray \r makes Linux look for an interpreter called "bash\r" and
+# the container fails with "no such file or directory".
+*.sh text eol=lf
+entrypoint.sh text eol=lf
+scheduled_run.sh text eol=lf
+.env.example text eol=lf
+Dockerfile text eol=lf
+*.yml text eol=lf
