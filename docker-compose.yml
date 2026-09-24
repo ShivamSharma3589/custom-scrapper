@@ -1,0 +1,22 @@
+services:
+  scraper:
+    build: .
+    image: retail-scraper
+    restart: unless-stopped
+
+    # Secrets and settings come from .env at run time, never from the image.
+    env_file: .env
+    environment:
+      CRON_SCHEDULE: "0 2 * * *"   # 02:00 daily
+      RUN_ON_START: "false"        # "true" to scrape once on startup
+      TZ: "Europe/London"
+
+    volumes:
+      # Output survives the container. Keep this even when uploading to
+      # Cloud Storage: the files are written here first.
+      - ./output:/app/output
+      # The service-account key, if GOOGLE_APPLICATION_CREDENTIALS points here.
+      - ./secrets:/app/secrets:ro
+
+    # A browser needs more than Docker's default 64 MB of shared memory.
+    shm_size: 1gb

@@ -8,6 +8,7 @@ run still counts as a success.
 
 import json
 import logging
+import re
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Sequence
 
@@ -63,17 +64,14 @@ def _schemas():
             F("category", "STRING"),
             F("product_title", "STRING"),
             F("product_url", "STRING"),
-            F("sku", "STRING"),
             F("current_price", "NUMERIC"),
             F("original_price", "NUMERIC"),
             F("discount_amount", "NUMERIC"),
             F("discount_percent", "NUMERIC"),
             F("price_is_from", "BOOL"),
-            F("currency", "STRING"),
             F("availability", "STRING"),
             F("variant_count", "INT64"),
             F("promotional_copy", "STRING"),
-            F("brand_verified_by", "STRING"),
             F("scraped_at", "TIMESTAMP"),
         ],
         CAMPAIGNS: [
@@ -84,7 +82,6 @@ def _schemas():
             F("promotion_text", "STRING"),
             F("promotion_type", "STRING"),
             F("scope", "STRING"),
-            F("scope_value", "STRING"),
             F("promo_code", "STRING"),
             F("landing_url", "STRING"),
             F("source_url", "STRING"),
@@ -140,17 +137,14 @@ def _product_rows(payload, run_id, started_at, retailer) -> List[Dict[str, Any]]
             "category": p.get("category"),
             "product_title": p.get("product_title"),
             "product_url": p.get("product_url"),
-            "sku": p.get("sku"),
             "current_price": _money(p.get("current_price")),
             "original_price": _money(p.get("original_price")),
             "discount_amount": _money(p.get("discount_amount")),
             "discount_percent": _money(p.get("discount_percent")),
             "price_is_from": p.get("price_is_from"),
-            "currency": p.get("currency"),
             "availability": p.get("availability"),
             "variant_count": p.get("variant_count"),
             "promotional_copy": p.get("promotional_copy"),
-            "brand_verified_by": p.get("brand_verified_by"),
             "scraped_at": p.get("scraped_at"),
         })
     return rows
@@ -167,7 +161,6 @@ def _campaign_rows(payload, run_id, started_at, retailer) -> List[Dict[str, Any]
             "promotion_text": c.get("promotion_text"),
             "promotion_type": c.get("promotion_type"),
             "scope": c.get("scope"),
-            "scope_value": c.get("scope_value"),
             "promo_code": c.get("promo_code"),
             "landing_url": c.get("landing_url"),
             "source_url": c.get("source_url"),
@@ -246,6 +239,15 @@ def publish(payload: Dict[str, Any], manifest: Dict[str, Any],
         return [f"publishing to Google Cloud failed ({exc}); the files are still on disk"]
 
 
+def _stamp(files: Sequence[Path]) -> Optional[str]:
+    """The run's timestamp, taken from any of its filenames."""
+    for path in files:
+        name = Path(path).stem
+        if re.fullmatch(r"\d{4}-\d\d-\d\d_\d\d-\d\d-\d\d", name):
+            return name
+    return None
+
+
 def _publish(payload: Dict[str, Any], manifest: Dict[str, Any],
              files: Sequence[Path], run_folder: str) -> List[str]:
 
@@ -254,7 +256,7 @@ def _publish(payload: Dict[str, Any], manifest: Dict[str, Any],
     started_at = manifest.get("started_at")
     retailer = manifest.get("retailer")
     status = manifest.get("status")
-    stamp = f"{run_folder}/{run_id}"
+    stamp = _stamp(files) or run_id
 
     try:
         from google.cloud import bigquery, storage
@@ -273,7 +275,7 @@ def _publish(payload: Dict[str, Any], manifest: Dict[str, Any],
         path = Path(path)
         if not path.exists():
             continue
-        blob_name = f"{stamp}/{path.parent.name}/{path.name}"
+        blob_name = f"{run_folder}/{path.parent.name}/{path.name}"
         try:
             if _upload(bucket, path, blob_name):
                 uploaded.append((path, blob_name))
@@ -316,7 +318,7 @@ def _publish(payload: Dict[str, Any], manifest: Dict[str, Any],
             warnings.append(f"could not check whether {run_id} is already in {name} ({exc})")
             continue
 
-        blob_name = f"{stamp}/bigquery/{name}.ndjson"
+        blob_name = f"{run_folder}/bigquery/{stamp}.{name}.ndjson"
         body = "\n".join(json.dumps(r, ensure_ascii=False, default=str) for r in rows)
         try:
             bucket.blob(blob_name).upload_from_string(body, content_type="application/json")

@@ -136,6 +136,7 @@ class JohnLewisAdapter(RetailerAdapter):
                 timeout=120_000,
                 max_pages=2,
                 proxy=proxy,
+                disable_resources=True,
             )
 
         self.add_proxied_sessions(manager, browser)

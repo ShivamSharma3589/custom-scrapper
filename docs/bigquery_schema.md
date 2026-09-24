@@ -106,17 +106,14 @@ CREATE TABLE retail.products (
   category          STRING,
   product_title     STRING,
   product_url       STRING,
-  sku               STRING,
   current_price     NUMERIC,
   original_price    NUMERIC,              -- the was-price, null if not reduced
   discount_amount   NUMERIC,
   discount_percent  NUMERIC,
   price_is_from     BOOL,                 -- true when sizes differ in price
-  currency          STRING,
   availability      STRING,
   variant_count     INT64,
   promotional_copy  STRING,
-  brand_verified_by STRING,               -- how the brand was proven
   scraped_at        TIMESTAMP
 )
 PARTITION BY DATE(run_started_at)
@@ -142,7 +139,6 @@ CREATE TABLE retail.campaigns (
   promotion_text STRING,               -- "At Least 20% Off SPF"
   promotion_type STRING,               -- percentage_discount | bundle | …
   scope          STRING,               -- sitewide | brand | category | product | unresolved
-  scope_value    STRING,               -- e.g. "suncare" for a category offer
   promo_code     STRING,
   landing_url    STRING,               -- the page where the offer is advertised
   source_url     STRING                -- the page it was scraped from

@@ -18,14 +18,14 @@ from pathlib import Path
 
 # Uncomment the shops to scrape. Names: python run.py --list-retailers
 RETAILERS = [
-    "lookfantastic", 
-    # "boots",
-    # "johnlewis",
-    # "allbeauty",
-    # "asos",
-    # "marksandspencer",
-    # "next",
-    # "amazon",
+    "allbeauty",        # ~1 min
+    "marksandspencer",  # ~1 min
+    "asos",             # ~8 min
+    "lookfantastic",    # ~35 min
+    "johnlewis",        # ~100 min, run last
+    # "boots",          # its own waiting-room queue makes a full run ~11 hours
+    # "next",           # refuses datacenter IPs; needs ALLOW_DIRECT=true
+    # "amazon",         # never run or reviewed
 ]
 
 BRANDS = [

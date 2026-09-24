@@ -1,0 +1,22 @@
+# Credentials. Pass these at run time instead.
+.env
+*.key
+*.json.key
+service-account*.json
+
+# A Windows virtualenv is useless in a Linux container, and it is 273 MB.
+.venv
+venv
+__pycache__
+*.pyc
+
+# Scraped output belongs in a volume or in Cloud Storage, not in the image.
+output/
+.jl_brand_codes.json
+
+# History and editor noise.
+.git
+.gitignore
+.idea
+.vscode
+*.log
