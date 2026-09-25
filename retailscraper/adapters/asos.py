@@ -56,7 +56,6 @@ class AsosAdapter(RetailerAdapter):
             timeout=120_000,
             max_pages=2,
             proxy=proxy,
-            disable_resources=True,
         ))
 
     MAX_LIST_PAGES = 40
