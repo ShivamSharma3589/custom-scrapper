@@ -237,7 +237,8 @@ class JohnLewisAdapter(RetailerAdapter):
         wanted = set(wanted)
         try:
             response = StealthyFetcher.fetch(
-                _BRAND_INDEX, headless=True, network_idle=True, proxy=first_proxy()
+                _BRAND_INDEX, headless=True, network_idle=True, proxy=first_proxy(),
+                extra_flags=["--disable-http2"],
             )
             html = getattr(response, "html_content", None) or str(response)
         except Exception:
