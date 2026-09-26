@@ -72,7 +72,7 @@ _GRID_INDEX = "https://www.johnlewis.com/sitemap/grids/grids.xml"
 
 _BRAND_INDEX = "https://www.johnlewis.com/brands/all"
 
-_BRAND_LINK_RE = re.compile(r"/brand/([A-Za-z0-9%-]+)/_/N-(\w+)")
+_BRAND_LINK_RE = re.compile(r'/brand/([^/\s<>"]+)/_/N-(\w+)')
 
 _LISTING_SIZE_RE = re.compile(
     r'"results"\s*:\s*(\d+)\s*,\s*"pagesAvailable"\s*:\s*(\d+)'

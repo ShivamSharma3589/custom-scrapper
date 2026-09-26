@@ -49,7 +49,7 @@ LOG = OUTPUT / "scrape_job.log"
 
 TIMEOUT_SECONDS = 3 * 60 * 60
 
-REFUSAL_LIMITS = {"johnlewis": 0.9}
+REFUSAL_LIMITS = {"johnlewis": 0.35}
 
 
 def log(message: str) -> None:

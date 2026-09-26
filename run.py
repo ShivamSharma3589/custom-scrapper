@@ -378,7 +378,7 @@ def main(argv=None) -> int:
             print(f"  requests          : {total} ({refused} refused, {share:.0%})")
         if spider.recovered_refusals:
             print(f"  recovered         : {spider.recovered_refusals} refusal(s) "
-                  f"survived by switching proxy")
+                  f"retried successfully")
         if spider.abandoned:
             print(f"  pages skipped     : {len(spider.abandoned)} (could not be fetched)")
             for page in spider.abandoned[:5]:

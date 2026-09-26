@@ -140,7 +140,7 @@ REFUSAL_STATUSES = (403, 429, 503)
 
 
 def refusal_rate(stats: Dict[str, Any], recovered: int = 0) -> Tuple[int, int, float]:
-    """(refused, total, share) for one run, ignoring refusals a proxy swap fixed."""
+    """(refused, total, share) for one run, ignoring refusals a retry got past."""
     statuses = stats.get("response_status_count") or {}
     total = int(stats.get("requests_count") or 0)
     refused = 0
@@ -236,7 +236,7 @@ def build_manifest(
         "rejected": rejected,
         "requests_total": total,
         "requests_refused": refused,
-        "refusals_recovered_by_switching_proxy": recovered_refusals,
+        "refusals_recovered": recovered_refusals,
         "brands_requested": list(brands_requested),
         "brands_empty": list(brands_empty),
         "abandoned_pages": list(abandoned),

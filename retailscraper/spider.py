@@ -132,7 +132,7 @@ class RetailPromotionSpider(SitemapSpider):
         self._switch_lock = asyncio.Lock()
 
         self.recovered_refusals = 0
-        self._refusals_on_session = 0
+        self._refusals_by_url: Dict[str, int] = {}
 
         super().__init__(crawldir=crawldir)
 
@@ -281,8 +281,13 @@ class RetailPromotionSpider(SitemapSpider):
             brand = self._brand_for_url(str(response.url))
             self.blocked_by_brand[brand] = self.blocked_by_brand.get(brand, 0) + 1
         self._refused_in_a_row = self._refused_in_a_row + 1 if blocked else 0
+
+        url = str(response.url)
         if blocked:
-            self._refusals_on_session += 1
+            self._refusals_by_url[url] = self._refusals_by_url.get(url, 0) + 1
+        else:
+            self.recovered_refusals += self._refusals_by_url.pop(url, 0)
+
         return blocked
 
     async def retry_blocked_request(self, request: Request, response) -> Request:
@@ -326,9 +331,6 @@ class RetailPromotionSpider(SitemapSpider):
             retired = manager.pop(current)
             # The backup takes over the retired id: queued requests already carry it.
             manager.add(current, backup, default=True)
-            # Refusals the retired proxy earned are not evidence against the run
-            self.recovered_refusals += self._refusals_on_session
-            self._refusals_on_session = 0
             self._refused_in_a_row = 0
             self.switched_sessions.append(self._active_session)
             self.logger.warning(
@@ -569,8 +571,44 @@ class RetailPromotionSpider(SitemapSpider):
         if campaign.campaign_id not in self.campaigns:
             self.campaigns[campaign.campaign_id] = campaign
 
+    def collapse_duplicate_campaigns(self) -> int:
+        """Merge one promotion stated at two lengths into its fuller wording."""
+        groups: Dict[str, List[Campaign]] = {}
+        for campaign in self.campaigns.values():
+            page = (campaign.landing_url or "").split("#")[0].rstrip("/").lower()
+            if page:
+                groups.setdefault(page, []).append(campaign)
+
+        replaced: Dict[str, str] = {}
+        for group in groups.values():
+            if len(group) < 2:
+                continue
+            longest_first = sorted(
+                group, key=lambda c: len(c.promotion_text), reverse=True)
+            for keep in longest_first:
+                if keep.campaign_id in replaced:
+                    continue
+                for other in group:
+                    if other is keep or other.campaign_id in replaced:
+                        continue
+                    short, full = _plain(other.promotion_text), _plain(keep.promotion_text)
+                    if short == full or short in full:
+                        replaced[other.campaign_id] = keep.campaign_id
+
+        for dropped in replaced:
+            self.campaigns.pop(dropped, None)
+
+        if replaced:
+            for product_id, ids in self._page_offers.items():
+                self._page_offers[product_id] = list(dict.fromkeys(
+                    replaced.get(cid, cid) for cid in ids))
+            self.logger.info(
+                f"collapsed {len(replaced)} duplicate campaign wording(s)")
+        return len(replaced)
+
     def apply_campaigns(self) -> int:
         """Attach campaigns to every product, once the crawl has finished."""
+        self.collapse_duplicate_campaigns()
         touched = 0
         for product in self.products.values():
             applied = self._campaigns_for(product)

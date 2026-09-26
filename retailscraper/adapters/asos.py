@@ -335,8 +335,15 @@ class AsosAdapter(RetailerAdapter):
         return [str(tile["id"]) for tile in self._embedded_products(response)
                 if tile.get("id") is not None]
 
+    def _wrong_storefront(self, response) -> bool:
+        """True when this page is another country's site, priced in its money."""
+        currency = self.page_currency(response)
+        return bool(currency and currency != self.EXPECTED_CURRENCY)
+
     def extract_campaign_directory(self, response) -> List[Campaign]:
         """Every offer linked from a hub page, via the shared scan."""
+        if self._wrong_storefront(response):
+            return []
         return self._scan_offer_links(response)
 
     def _title_offer(self, response) -> Optional[str]:
@@ -345,14 +352,18 @@ class AsosAdapter(RetailerAdapter):
         if not nodes:
             return None
         text = clean_text(nodes[0].get_all_text()) or ""
-        text = re.sub(r"\s*\|\s*ASOS\s*$", "", text).strip()
-        return text or None
+        text = re.sub(r"\s*\|\s*ASOS\s*$", "", text)
+        text = re.sub(r"^\s*Page\s+\d+\s*[-–—]\s*", "", text, flags=re.I)
+        return text.strip() or None
 
     def extract_campaigns(self, response) -> List[Campaign]:
         """Offers stated on a search or landing page."""
         url = str(response.url)
         campaigns: List[Campaign] = []
         seen: set = set()
+
+        if self._wrong_storefront(response):
+            return []
 
         path = url[len(f"https://{self.domain}"):] if url.startswith(f"https://{self.domain}") else ""
         if self._is_promo_path(path.split("?")[0]):
