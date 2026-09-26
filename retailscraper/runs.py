@@ -139,8 +139,8 @@ def run_lock(base: Path, adapter) -> Iterator[Path]:
 REFUSAL_STATUSES = (403, 429, 503)
 
 
-def refusal_rate(stats: Dict[str, Any]) -> Tuple[int, int, float]:
-    """(refused, total, share) for one run."""
+def refusal_rate(stats: Dict[str, Any], recovered: int = 0) -> Tuple[int, int, float]:
+    """(refused, total, share) for one run, ignoring refusals a proxy swap fixed."""
     statuses = stats.get("response_status_count") or {}
     total = int(stats.get("requests_count") or 0)
     refused = 0
@@ -148,6 +148,7 @@ def refusal_rate(stats: Dict[str, Any]) -> Tuple[int, int, float]:
         match = re.search(r"(\d{3})", str(key))
         if match and int(match.group(1)) in REFUSAL_STATUSES:
             refused += int(count or 0)
+    refused = max(0, refused - max(0, recovered))
     share = (refused / total) if total else 0.0
     return refused, total, share
 
@@ -160,9 +161,17 @@ def verdict(
     refusal_limit: float = DEFAULT_REFUSAL_LIMIT,
     campaigns: Optional[int] = None,
     expected_products: Optional[int] = None,
+    abandoned: Sequence[Any] = (),
+    recovered_refusals: int = 0,
 ) -> Tuple[str, Optional[str]]:
     """Did this run produce data worth loading? Returns (status, reason)."""
-    refused, total, share = refusal_rate(stats)
+    if abandoned:
+        return STATUS_INCOMPLETE, (
+            f"{len(abandoned)} page(s) could not be fetched and were skipped; "
+            "the products on them are missing"
+        )
+
+    refused, total, share = refusal_rate(stats, recovered_refusals)
     if total and share > refusal_limit:
         return STATUS_FAILED, (
             f"{refused} of {total} requests refused "
@@ -206,9 +215,11 @@ def build_manifest(
     reason: Optional[str] = None,
     warnings: Sequence[str] = (),
     files: Sequence[str] = (),
+    abandoned: Sequence[Any] = (),
+    recovered_refusals: int = 0,
 ) -> Dict[str, Any]:
     """The record of one run: what was asked for, what came back, and why."""
-    refused, total, _ = refusal_rate(stats)
+    refused, total, _ = refusal_rate(stats, recovered_refusals)
     return {
         "run_id": run_id,
         "retailer": adapter.display_name,
@@ -225,8 +236,10 @@ def build_manifest(
         "rejected": rejected,
         "requests_total": total,
         "requests_refused": refused,
+        "refusals_recovered_by_switching_proxy": recovered_refusals,
         "brands_requested": list(brands_requested),
         "brands_empty": list(brands_empty),
+        "abandoned_pages": list(abandoned),
         "warnings": list(warnings),
         "files": list(files),
     }

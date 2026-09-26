@@ -370,10 +370,21 @@ def main(argv=None) -> int:
             campaigns=(run_stats["campaign_records"]
                        if args.campaigns_only else None),
             expected_products=expected_products,
+            abandoned=spider.abandoned,
+            recovered_refusals=spider.recovered_refusals,
         )
-        refused, total, share = refusal_rate(stats)
+        refused, total, share = refusal_rate(stats, spider.recovered_refusals)
         if total:
             print(f"  requests          : {total} ({refused} refused, {share:.0%})")
+        if spider.recovered_refusals:
+            print(f"  recovered         : {spider.recovered_refusals} refusal(s) "
+                  f"survived by switching proxy")
+        if spider.abandoned:
+            print(f"  pages skipped     : {len(spider.abandoned)} (could not be fetched)")
+            for page in spider.abandoned[:5]:
+                print(f"      {page['url']}  --  {page['reason']}")
+            if len(spider.abandoned) > 5:
+                print(f"      ... and {len(spider.abandoned) - 5} more")
         print(f"  verdict           : {status.upper()}"
               + (f" -- {reason}" if reason else ""))
 
@@ -401,6 +412,8 @@ def main(argv=None) -> int:
             reason=reason,
             warnings=prepare_warnings,
             files=[str(Path(p).relative_to(paths.root)) for p in written],
+            abandoned=spider.abandoned,
+            recovered_refusals=spider.recovered_refusals,
         )
         written.append(
             write_manifest(paths.file("manifest", ".json"), manifest))

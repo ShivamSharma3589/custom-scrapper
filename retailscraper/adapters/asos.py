@@ -14,6 +14,7 @@ from ..promotions import (
 )
 from ..validation import match_brand
 from .base import ListingPage, RetailerAdapter, register
+from config import first_proxy
 
 _PRODUCT_URL_RE = re.compile(
     r"^https?://(?:www\.)?asos\.com/.+/prd/(\d+)", re.I
@@ -24,6 +25,12 @@ _PAGE_SIZE = 72
 _TOTAL_RE = re.compile(r"(\d[\d,]*)\s+styles found", re.IGNORECASE)
 
 _CURRENCY_RE = re.compile(r'"currency"\s*:\s*\{[^}]*?"currency"\s*:\s*"([A-Z]{3})"')
+
+_UK_SECTION_RE = re.compile(r"^/(?:women|men|outlet)(?:/|$)", re.I)
+
+_PROMO_PATH_RE = re.compile(r"/ctas/(?:generic|coded|core)-promos?/", re.I)
+
+_SALE_PATH_RE = re.compile(r"/sale/", re.I)
 
 
 @register
@@ -40,25 +47,43 @@ class AsosAdapter(RetailerAdapter):
 
     EXPECTED_CURRENCY = "GBP"
 
+    listing_session_id = "listings"
+
+    MAX_OFFER_PAGES = 8
+
     def __init__(self) -> None:
         self.wrong_currency_pages = 0
         self.currencies_seen: set = set()
         self._capped: set = set()
+        self._wanted_slugs: List[str] = []
+        self._offer_depth: Dict[str, int] = {}
+        self._offer_seen: set = set()
+        self._offer_capped = False
+
+    def prepare(self, brands: Sequence[str]) -> List[str]:
+        """Remember the brands, so the offer walk can tell ours from the rest."""
+        self._wanted_slugs = [
+            re.sub(r"[^a-z0-9]+", " ", b.lower()).strip() for b in brands
+        ]
+        return []
 
     def configure_session(self, manager) -> None:
-        """A browser for everything: plain HTTP hangs rather than failing."""
+        """A browser for everything, resources included."""
         from scrapling.fetchers import AsyncStealthySession
 
-        self.add_proxied_sessions(manager, lambda proxy: AsyncStealthySession(
-            headless=True,
-            google_search=True,
-            network_idle=True,
-            timeout=120_000,
-            max_pages=2,
-            proxy=proxy,
-            disable_resources=True,
-            extra_flags=["--disable-http2"],
-        ))
+        def browser(proxy) -> AsyncStealthySession:
+            return AsyncStealthySession(
+                headless=True,
+                google_search=True,
+                network_idle=True,
+                timeout=120_000,
+                max_pages=2,
+                proxy=proxy,
+                extra_flags=["--disable-http2"],
+            )
+
+        self.add_proxied_sessions(manager, browser)
+        manager.add(self.listing_session_id, browser(first_proxy()), lazy=True)
 
     MAX_LIST_PAGES = 40
 
@@ -93,9 +118,15 @@ class AsosAdapter(RetailerAdapter):
         return [re.sub(r"([?&]page=)\d+", rf"\g<1>{page + 1}", url)]
 
     def crawl_warnings(self) -> List[str]:
-        return [f"{brand} has more than {self.MAX_LIST_PAGES * _PAGE_SIZE} "
-                f"search results; the rest were not read"
-                for brand in sorted(self._capped)]
+        warnings = [f"{brand} has more than {self.MAX_LIST_PAGES * _PAGE_SIZE} "
+                    f"search results; the rest were not read"
+                    for brand in sorted(self._capped)]
+        if self._offer_capped:
+            warnings.append(
+                f"stopped after {self.MAX_OFFER_PAGES} ASOS offer pages; "
+                f"any offer beyond that was not read"
+            )
+        return warnings
 
     def is_product_url(self, url: str) -> bool:
         return bool(_PRODUCT_URL_RE.match(url.split("?")[0]))
@@ -253,20 +284,91 @@ class AsosAdapter(RetailerAdapter):
         return None
 
     def campaign_discovery_urls(self) -> List[str]:
-        """ASOS's outlet, which is where it states its reductions."""
-        return [
-        "https://www.asos.com/outlet/",
-        ]
+        """The outlet, whose navigation links every promotion ASOS is running."""
+        return ["https://www.asos.com/outlet/"]
+
+    def _is_promo_path(self, path: str) -> bool:
+        """True for a UK page that states a promotion."""
+        return bool(_UK_SECTION_RE.match(path) and _PROMO_PATH_RE.search(path))
+
+    def _is_sale_path(self, path: str) -> bool:
+        """True for a UK sale listing, which is only worth reading for our brands."""
+        return bool(_UK_SECTION_RE.match(path) and _SALE_PATH_RE.search(path))
+
+    def _names_wanted_brand(self, *texts: str) -> bool:
+        """True when a URL or link text names one of the requested brands."""
+        words = re.sub(r"[^a-z0-9]+", " ", " ".join(texts).lower())
+        return any(re.search(rf"(?<![a-z0-9]){re.escape(slug)}(?![a-z0-9])", words)
+                   for slug in self._wanted_slugs)
+
+    def offer_page_links(self, response) -> List[str]:
+        """The promotion pages ASOS links from its navigation"""
+        page = str(response.url)
+        root = f"https://{self.domain}"
+        links: List[str] = []
+
+        for node in response.css("a[href]"):
+            if len(self._offer_seen) >= self.MAX_OFFER_PAGES:
+                self._offer_capped = True
+                break
+
+            href = (node.attrib.get("href") or "").split("#")[0]
+            if href.startswith("/"):
+                href = f"{root}{href}"
+            if not href.startswith(f"{root}/"):
+                continue
+            if not self._is_promo_path(href[len(root):].split("?")[0]):
+                continue
+            if "cid=" not in href:
+                continue
+
+            key = href
+            if key in self._offer_seen or key == page:
+                continue
+            self._offer_seen.add(key)
+            links.append(href)
+
+        return links
+
+    def offer_page_products(self, response) -> List[str]:
+        """Ids of the products an offer page lists."""
+        return [str(tile["id"]) for tile in self._embedded_products(response)
+                if tile.get("id") is not None]
 
     def extract_campaign_directory(self, response) -> List[Campaign]:
         """Every offer linked from a hub page, via the shared scan."""
         return self._scan_offer_links(response)
+
+    def _title_offer(self, response) -> Optional[str]:
+        """The offer a promo landing page names in its title."""
+        nodes = response.css("title")
+        if not nodes:
+            return None
+        text = clean_text(nodes[0].get_all_text()) or ""
+        text = re.sub(r"\s*\|\s*ASOS\s*$", "", text).strip()
+        return text or None
 
     def extract_campaigns(self, response) -> List[Campaign]:
         """Offers stated on a search or landing page."""
         url = str(response.url)
         campaigns: List[Campaign] = []
         seen: set = set()
+
+        path = url[len(f"https://{self.domain}"):] if url.startswith(f"https://{self.domain}") else ""
+        if self._is_promo_path(path.split("?")[0]):
+            title = self._title_offer(response)
+            if title and is_confident_offer(title) and not is_browse_facet(title, url):
+                seen.add(title)
+                campaigns.append(Campaign(
+                    retailer=self.display_name,
+                    promotion_text=title,
+                    promotion_type=classify_promotion(title),
+                    scope=SCOPE_SITEWIDE,
+                    scope_value=None,
+                    promo_code=extract_promo_code(title),
+                    source_url=canonical_url(url),
+                    landing_url=canonical_url(url),
+                ))
 
         for node in response.css("[class*='banner'], [class*='promo'], [class*='Banner'], h1, h2"):
             text = clean_text(node.get_all_text())

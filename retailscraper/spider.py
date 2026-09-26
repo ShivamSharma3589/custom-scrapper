@@ -1,5 +1,6 @@
 """The generic crawler."""
 
+import asyncio
 import re
 from typing import Any, AsyncGenerator, Callable, Dict, List, Optional, Sequence
 
@@ -8,6 +9,45 @@ from scrapling.spiders import CrawlRule, LinkExtractor, Request, SitemapSpider
 from .adapters.base import RetailerAdapter
 from .models import Campaign, Product, RejectedRecord, SCOPE_PRODUCT, SCOPE_SITEWIDE
 from .validation import match_brand, validate
+
+TRANSPORT_FAILURES = (
+    "net::err_tunnel",
+    "net::err_proxy",
+    "net::err_empty_response",
+    "net::err_http2_protocol_error",
+    "net::err_connection_closed",
+    "net::err_connection_reset",
+    "net::err_connection_refused",
+    "net::err_socks_connection",
+    "net::err_ssl_protocol_error",
+    "connection refused",
+    "connection reset",
+    "connection timed out",
+    "failed to connect",
+    "could not resolve proxy",
+)
+
+
+FETCH_FAILURES = ("page.goto:", "net::", "timeout", "timed out", "navigating to")
+
+
+def is_transport_failure(error: Exception) -> bool:
+    """True when the fetch never reached the site and the proxy is to blame."""
+    message = str(error).lower()
+    return any(marker in message for marker in TRANSPORT_FAILURES)
+
+
+def is_fetch_failure(error: Exception) -> bool:
+    """True when the page did not load, whatever the cause.
+
+    Parse errors reach `on_error` too, and must not be retried or cost a proxy.
+    """
+    message = str(error).lower()
+    return is_transport_failure(error) or any(m in message for m in FETCH_FAILURES)
+
+
+def _first_line(error: Exception) -> str:
+    return str(error).splitlines()[0][:100]
 
 
 class RetailPromotionSpider(SitemapSpider):
@@ -86,6 +126,13 @@ class RetailPromotionSpider(SitemapSpider):
         self._refused_in_a_row = 0
         self.switched_sessions: List[str] = []
         self._active_session = "default"
+
+        self.abandoned: List[Dict[str, str]] = []
+        self._proxies_exhausted = False
+        self._switch_lock = asyncio.Lock()
+
+        self.recovered_refusals = 0
+        self._refusals_on_session = 0
 
         super().__init__(crawldir=crawldir)
 
@@ -234,14 +281,39 @@ class RetailPromotionSpider(SitemapSpider):
             brand = self._brand_for_url(str(response.url))
             self.blocked_by_brand[brand] = self.blocked_by_brand.get(brand, 0) + 1
         self._refused_in_a_row = self._refused_in_a_row + 1 if blocked else 0
+        if blocked:
+            self._refusals_on_session += 1
         return blocked
 
     async def retry_blocked_request(self, request: Request, response) -> Request:
         """Move the crawl to the adapter's next session once this one is being refused."""
         manager = self._session_manager
         current = manager.default_session_id
-        if self._refused_in_a_row < self.SWITCH_AFTER_REFUSALS or (request.sid or current) != current:
+        if (request.sid or current) != current:
             return request
+
+        switches_before = len(self.switched_sessions)
+        await self._switch_to_backup(
+            f"refused {self.SWITCH_AFTER_REFUSALS} requests in a row"
+        )
+        if len(self.switched_sessions) > switches_before:
+            request._retry_count = 0
+            request.sid = manager.default_session_id
+        return request
+
+    async def _switch_to_backup(self, why: str) -> bool:
+        """Retire the session in use and put the next proxy behind its id."""
+        if self._refused_in_a_row < self.SWITCH_AFTER_REFUSALS:
+            return True
+
+        async with self._switch_lock:
+            if self._refused_in_a_row < self.SWITCH_AFTER_REFUSALS:
+                return True
+            return await self._take_next_session(why)
+
+    async def _take_next_session(self, why: str) -> bool:
+        manager = self._session_manager
+        current = manager.default_session_id
 
         for backup_id in [sid for sid in self.adapter.backup_session_ids if sid in manager.session_ids]:
             backup = manager.pop(backup_id)
@@ -254,19 +326,72 @@ class RetailPromotionSpider(SitemapSpider):
             retired = manager.pop(current)
             # The backup takes over the retired id: queued requests already carry it.
             manager.add(current, backup, default=True)
+            # Refusals the retired proxy earned are not evidence against the run
+            self.recovered_refusals += self._refusals_on_session
+            self._refusals_on_session = 0
             self._refused_in_a_row = 0
             self.switched_sessions.append(self._active_session)
             self.logger.warning(
-                f"session {self._active_session!r} refused {self.SWITCH_AFTER_REFUSALS} requests "
-                f"in a row; moving to {backup_id!r}"
+                f"session {self._active_session!r} {why}; moving to {backup_id!r}"
             )
             self._active_session = backup_id
             try:
                 await retired.close()
             except Exception as exc:  # pragma: no cover - closing is best effort
                 self.logger.debug(f"closing the refused session: {exc}")
-            break
-        return request
+            return True
+
+        return False
+
+    async def on_error(self, request: Request, error: Exception) -> None:
+        """A fetch that threw never reaches `is_blocked`, so count it here"""
+        if not is_fetch_failure(error):
+            return
+
+        brand = self._brand_for_url(request.url)
+        self.blocked_by_brand[brand] = self.blocked_by_brand.get(brand, 0) + 1
+        self._refused_in_a_row += 1
+
+        if is_transport_failure(error):
+            self._refused_in_a_row = max(self._refused_in_a_row,
+                                         self.SWITCH_AFTER_REFUSALS)
+
+        switches_before = len(self.switched_sessions)
+        if not await self._switch_to_backup(f"could not fetch: {_first_line(error)}"):
+            self._abandon(request, f"no proxy left that could fetch it: {_first_line(error)}")
+            if not self._proxies_exhausted:
+                self._proxies_exhausted = True
+                self.logger.error(
+                    "every configured proxy failed; stopping the crawl rather "
+                    "than fetching nothing from the rest of the queue"
+                )
+                try:
+                    self.pause()
+                except RuntimeError:  # pragma: no cover - no engine to stop
+                    pass
+            return
+
+        moved = len(self.switched_sessions) > switches_before
+        if not moved and request._retry_count >= self.max_blocked_retries:
+            self._abandon(request, _first_line(error))
+            return
+
+        retry = request.copy()
+        retry._retry_count = 0 if moved else request._retry_count + 1
+        retry.priority -= 1
+        retry.dont_filter = True
+        retry.sid = self._session_manager.default_session_id
+        await self._engine.scheduler.enqueue(retry)
+        self.logger.info(
+            f"re-queued after a connection failure "
+            f"({retry._retry_count}/{self.max_blocked_retries}"
+            f"{', on a fresh proxy' if moved else ''}): {request.url}"
+        )
+
+    def _abandon(self, request: Request, why: str) -> None:
+        """Record a page the crawl gave up on, so the run cannot report OK."""
+        self.abandoned.append({"url": request.url, "reason": why})
+        self.logger.warning(f"giving up on {request.url}: {why}")
 
     def _brand_for_url(self, url: str) -> str:
         """Which requested brand a candidate URL appears to belong to."""
