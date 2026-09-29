@@ -189,6 +189,10 @@ class RetailerAdapter(ABC):
         """Every brand this retailer sells, when it publishes a list of them"""
         return []
 
+    def has_brand_catalogue(self) -> bool:
+        """True when this retailer publishes a brand list to filter against."""
+        return type(self).stocked_brands is not RetailerAdapter.stocked_brands
+
     def campaign_brands(self, campaign, wanted: Sequence[str]) -> Optional[List[str]]:
         """Which of `wanted` an offer applies to, or None when it is not ours"""
         from ..models import SCOPE_BRAND
@@ -197,7 +201,7 @@ class RetailerAdapter(ABC):
 
         catalogue = self.stocked_brands()
         if not catalogue:
-            return None
+            return list(wanted)
 
         if campaign.scope == SCOPE_BRAND and campaign.scope_value:
             ours = [w for w in wanted if match_brand(campaign.scope_value, [w])]

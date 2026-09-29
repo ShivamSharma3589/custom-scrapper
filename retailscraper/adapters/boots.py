@@ -1,7 +1,9 @@
 """Boots adapter."""
 
+import json
 import re
 from datetime import datetime, timezone
+from pathlib import Path
 from typing import Dict, Iterable, List, Optional, Sequence
 from urllib.parse import parse_qs, urlparse
 
@@ -15,6 +17,7 @@ from ..normalize import (
 )
 from ..promotions import classify_promotion, looks_like_offer
 from .base import ListingPage, RetailerAdapter, register
+from config import first_proxy
 
 _PRODUCT_URL_RE = re.compile(r"^https?://(?:www\.)?boots\.com/[a-z0-9][^/?#]*?-(\d{6,})/?$", re.I)
 
@@ -68,10 +71,87 @@ class BootsAdapter(RetailerAdapter):
     def __init__(self) -> None:
         self._featured_only: set = set()
         self._empty_lists: set = set()
+        self._stocked: Optional[List[str]] = None
 
     def warmup_url(self) -> Optional[str]:
         """The homepage, fetched only to get past bot protection."""
         return f"https://{self.domain}/"
+
+    #: The A-Z, one page per letter: /brands is A, then /brands-b ... /brands-z,
+    #: and a 27th for names starting with a digit.
+    BRAND_INDEX_PAGES = ["https://www.boots.com/brands"] + [
+        f"https://www.boots.com/brands-{letter}"
+        for letter in "bcdefghijklmnopqrstuvwxyz"
+    ] + ["https://www.boots.com/brands-0-9"]
+
+    #: Only this container holds brands; the rest of the page is site navigation.
+    BRAND_LIST_SELECTOR = "#brand_list_viewer a[href]"
+
+    @property
+    def _brand_cache(self) -> Path:
+        return Path(__file__).resolve().parent.parent.parent / ".boots_brands.json"
+
+    def stocked_brands(self) -> List[str]:
+        """Every brand in Boots' A-Z, read once and cached on disk.
+
+        Boots serves its bot wall to plain HTTP, so this needs a browser across
+        26 letter pages -- too slow to repeat, hence the cache.
+        """
+        if self._stocked is not None:
+            return self._stocked
+
+        try:
+            cached = json.loads(self._brand_cache.read_text(encoding="utf-8"))
+            if isinstance(cached, list) and cached:
+                self._stocked = cached
+                return self._stocked
+        except Exception:
+            pass
+
+        self._stocked = self._read_brand_index()
+        if self._stocked:
+            try:
+                self._brand_cache.write_text(
+                    json.dumps(self._stocked, indent=2, ensure_ascii=False),
+                    encoding="utf-8")
+            except Exception:  # pragma: no cover - a cache miss is not fatal
+                pass
+        return self._stocked
+
+    def _read_brand_index(self) -> List[str]:
+        """Walk the A-Z pages with a browser and collect the brand names."""
+        from scrapling.fetchers import StealthySession
+
+        names: set = set()
+
+        def fetch(session, url, tries: int = 3):
+            """Boots answers the first request with its wall and the next with
+            the page, so a single attempt is not enough here."""
+            for _ in range(tries):
+                try:
+                    response = session.fetch(url)
+                except Exception:
+                    continue
+                if not self.looks_blocked(response):
+                    return response
+            return None
+
+        try:
+            with StealthySession(headless=True, google_search=True,
+                                 network_idle=True, timeout=45_000,
+                                 proxy=first_proxy()) as session:
+                fetch(session, f"https://{self.domain}/")
+                for url in self.BRAND_INDEX_PAGES:
+                    response = fetch(session, url)
+                    if response is None:
+                        continue
+                    for node in response.css(self.BRAND_LIST_SELECTOR):
+                        text = clean_text(node.get_all_text()) or ""
+                        if 1 < len(text) < 40:
+                            names.add(text)
+        except Exception:
+            return sorted(names)
+        return sorted(names)
 
     def campaign_discovery_urls(self) -> List[str]:
         """The offers hub, for a campaigns-only run."""

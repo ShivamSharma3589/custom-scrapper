@@ -239,6 +239,13 @@ def main(argv=None) -> int:
             logging.getLogger(__name__).warning(warning)
             print(f"warning: {warning}", file=sys.stderr)
 
+        if args.brands and adapter.has_brand_catalogue() and not adapter.stocked_brands():
+            raise RuntimeError(
+                f"{adapter.display_name} published no brand list, so every campaign "
+                f"would be filtered out of brands_campaigns. Check its brand cache "
+                f"file before re-running."
+            )
+
         partial_writer = PartialWriter(paths.file("partial", ".jsonl"))
 
         spider = RetailPromotionSpider(

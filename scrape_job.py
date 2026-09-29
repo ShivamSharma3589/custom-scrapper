@@ -18,14 +18,14 @@ from pathlib import Path
 
 # Uncomment the shops to scrape. Names: python run.py --list-retailers
 RETAILERS = [
-    "allbeauty",        # ~1 min
-    "marksandspencer",  # ~1 min
-    "asos",             # ~8 min
-    "lookfantastic",    # ~35 min
-    "johnlewis",        # ~100 min, run last
-    # "boots",          # its own waiting-room queue makes a full run ~11 hours
-    # "next",           # refuses datacenter IPs; needs ALLOW_DIRECT=true
-    # "amazon",         # never run or reviewed
+    "lookfantastic",
+    "johnlewis",
+    # "boots",
+    # "allbeauty",
+    # "marksandspencer",
+    # "asos",
+    # "next",
+    # "amazon",
 ]
 
 BRANDS = [
@@ -39,7 +39,7 @@ BRANDS = [
 ]
 
 # True = offers only, a minute or two. False = the full crawl, hours.
-CAMPAIGNS_ONLY = False
+CAMPAIGNS_ONLY = True
 
 MAX_PRODUCTS = None
 
@@ -82,13 +82,12 @@ def scrape(retailer: str) -> dict:
     before = newest_manifest(retailer_folder)
 
     command = [sys.executable, str(HERE / "run.py"),
-               "--retailer", retailer, "--out-dir", str(OUTPUT)]
+               "--retailer", retailer, "--out-dir", str(OUTPUT),
+               "--brands", *BRANDS]
     if CAMPAIGNS_ONLY:
         command.append("--campaigns-only")
-    else:
-        command += ["--brands", *BRANDS]
-        if MAX_PRODUCTS:
-            command += ["--max-products", str(MAX_PRODUCTS)]
+    elif MAX_PRODUCTS:
+        command += ["--max-products", str(MAX_PRODUCTS)]
     if retailer in REFUSAL_LIMITS:
         command += ["--refusal-limit", str(REFUSAL_LIMITS[retailer])]
 
