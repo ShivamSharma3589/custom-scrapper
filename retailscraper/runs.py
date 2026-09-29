@@ -40,12 +40,13 @@ def retailer_folder_name(adapter) -> str:
 
 
 class RunPaths:
-    """Where one run's files go: `<base>/<retailer>/<folder>/<timestamp>.<ext>`."""
+    """Where one run's files go: `<base>/<retailer>/<folder>/<run_id>.<ext>`."""
 
-    def __init__(self, base: Path, adapter, when: Optional[datetime] = None) -> None:
+    def __init__(self, base: Path, adapter, when: Optional[datetime] = None,
+                 run_id: str = "") -> None:
         when = when or utc_now()
         self.root = Path(base) / retailer_folder_name(adapter)
-        self.stamp = when.strftime("%Y-%m-%d_%H-%M-%S")
+        self.stamp = run_id or when.strftime("%Y-%m-%d_%H-%M-%S")
 
     def file(self, folder: str, suffix: str) -> Path:
         """One file in one of this retailer's folders."""

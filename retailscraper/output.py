@@ -10,8 +10,13 @@ from typing import Any, Dict, Iterable, List, Sequence
 from .models import Campaign, Product, RejectedRecord
 from .validation import match_brand
 
+OFFER_PRODUCT_COLUMNS = [
+    "brand", "product_title", "product_id", "offer_text",
+    "current_price", "original_price", "discount_amount", "discount_percent",
+    "currency", "product_url", "campaign_ids", "offer_urls",
+]
+
 PRODUCT_COLUMNS = [
-    "run_id",
     "retailer", "brand", "brand_matched_to", "category",
     "product_title", "product_id", "sku",
     "current_price", "price_is_from", "original_price", "discount_amount", "discount_percent",
@@ -21,13 +26,12 @@ PRODUCT_COLUMNS = [
 ]
 
 CAMPAIGN_COLUMNS = [
-    "run_id",
     "campaign_id", "retailer", "scope", "scope_value",
     "promotion_type", "promotion_text", "promo_code",
     "landing_url", "source_url",
 ]
 
-REJECTED_COLUMNS = ["run_id", "reason", "detail", "source_url", "product_title", "product_id"]
+REJECTED_COLUMNS = ["reason", "detail", "source_url", "product_title", "product_id"]
 
 
 def build_payload(
@@ -39,24 +43,24 @@ def build_payload(
     rejected: Iterable[RejectedRecord],
     stats: Dict[str, Any],
     run_id: str = "",
+    campaigns_only: bool = False,
+    offer_products: Iterable[Dict[str, Any]] = (),
 ) -> Dict[str, Any]:
     """Assemble the full result document for one run."""
     product_list = sorted(products, key=lambda p: (p.brand, p.product_title))
     campaign_list = sorted(campaigns, key=lambda c: (c.scope, c.promotion_text))
     rejected_list = list(rejected)
 
-    def stamped(record: Dict[str, Any]) -> Dict[str, Any]:
-        return {"run_id": run_id, **record}
-
     return {
-        "run_id": run_id,
         "retailer": retailer,
         "domain": domain,
         "scraped_at": datetime.now(timezone.utc).isoformat(),
         "target_brands": list(brands),
-        "campaigns": [stamped(c.to_dict()) for c in campaign_list],
-        "products": [stamped(p.to_dict()) for p in product_list],
-        "rejected": [stamped(r.to_dict()) for r in rejected_list],
+        "campaigns_only": campaigns_only,
+        "offer_products": list(offer_products or []),
+        "campaigns": [c.to_dict() for c in campaign_list],
+        "products": [p.to_dict() for p in product_list],
+        "rejected": [r.to_dict() for r in rejected_list],
         "run_stats": {
             **stats,
             "campaign_records": len(campaign_list),
@@ -115,7 +119,6 @@ def _flat_rejections(payload: Dict[str, Any]) -> List[Dict[str, Any]]:
     for row in payload["rejected"]:
         fields = row.get("payload") or {}
         rows.append({
-            "run_id": row.get("run_id"),
             "reason": row.get("reason"),
             "detail": row.get("detail"),
             "source_url": row.get("source_url"),
@@ -149,23 +152,97 @@ def _as_campaign(row: Dict[str, Any]):
     )
 
 
-def write_all(payload: Dict[str, Any], paths, adapter=None) -> List[Path]:
+def _write_filtered(payload, campaigns, shared, put_json, put_csv) -> List[Path]:
+    """The client-facing set: campaigns proven to carry our brands, and those products"""
+    offers = payload.get("offer_products") or []
+
+    by_landing: Dict[str, List[str]] = {}
+    for campaign in campaigns:
+        landing = (campaign.get("landing_url") or "").split("?")[0].rstrip("/")
+        if landing and campaign.get("campaign_id"):
+            by_landing.setdefault(landing, []).append(campaign["campaign_id"])
+
+    merged: Dict[str, Dict[str, Any]] = {}
+    brands_by_campaign: Dict[str, set] = {}
+    for row in offers:
+        offer = (row.get("offer_url") or "").split("?")[0].rstrip("/")
+        ids = by_landing.get(offer, [])
+        for cid in ids:
+            brands_by_campaign.setdefault(cid, set()).add(row["brand"])
+
+        seen = merged.get(row["product_id"])
+        if seen is None:
+            merged[row["product_id"]] = {
+                **row, "campaign_ids": set(ids), "offer_urls": {offer},
+            }
+            continue
+        seen["campaign_ids"].update(ids)
+        seen["offer_urls"].add(offer)
+        if seen.get("original_price") is None and row.get("original_price") is not None:
+            for field in ("original_price", "current_price",
+                          "discount_amount", "discount_percent", "offer_text"):
+                seen[field] = row.get(field)
+
+    rows = [{**r, "campaign_ids": sorted(r["campaign_ids"]),
+             "offer_urls": sorted(r["offer_urls"])}
+            for r in merged.values()]
+    for row in rows:
+        row.pop("offer_url", None)
+
+    kept = [{**c, "brands": sorted(brands_by_campaign[c["campaign_id"]])}
+            for c in campaigns
+            if c.get("campaign_id") in brands_by_campaign]
+
+    put_json({**shared, "campaigns": kept}, "filtered_campaigns/campaigns")
+    put_csv([{**c, "brands": ";".join(c["brands"])} for c in kept],
+            CAMPAIGN_COLUMNS + ["brands"], "filtered_campaigns/campaigns")
+
+    put_json({**shared, "products": rows}, "filtered_campaigns/products")
+    put_csv([{**r,
+              "campaign_ids": ";".join(r["campaign_ids"]),
+              "offer_urls": ";".join(r["offer_urls"])} for r in rows],
+            OFFER_PRODUCT_COLUMNS, "filtered_campaigns/products")
+    return []
+
+
+def write_all(payload: Dict[str, Any], paths, adapter=None,
+              formats: Sequence[str] = ("json", "csv")) -> List[Path]:
     """Write one run's results into this retailer's folders."""
     written: List[Path] = []
+    formats = {f.lower() for f in formats}
+
+    def put_json(body: Dict[str, Any], folder: str, suffix: str = ".json") -> None:
+        if "json" in formats:
+            written.append(write_json(body, paths.file(folder, suffix)))
+
+    def put_csv(rows: List[Dict[str, Any]], columns: List[str], folder: str,
+                suffix: str = ".csv") -> None:
+        if "csv" in formats:
+            written.append(_write_csv(rows, columns, paths.file(folder, suffix)))
 
     products = _flat_products(payload)
     shared = {
         key: payload.get(key)
-        for key in ("run_id", "retailer", "domain", "scraped_at", "run_stats")
+        for key in ("retailer", "domain", "scraped_at", "run_stats")
     }
     campaigns = payload.get("campaigns") or []
+    campaigns_only = bool(payload.get("campaigns_only"))
+
+    if campaigns_only:
+        put_json({**shared, "campaigns": campaigns}, "campaigns")
+        put_csv(campaigns, CAMPAIGN_COLUMNS, "campaigns")
+        for path in _write_filtered(payload, campaigns, shared, put_json, put_csv):
+            written.append(path)
+        put_csv(_flat_rejections(payload), REJECTED_COLUMNS, "rejected")
+        return written
+
     brands_by_campaign: Dict[str, set] = {}
 
     for brand, rows in sorted(group_by_brand(payload["products"]).items()):
         applied = {cid for row in rows for cid in (row.get("applied_campaigns") or [])}
         for cid in applied:
             brands_by_campaign.setdefault(cid, set()).add(brand)
-        written.append(write_json({
+        put_json({
             **shared,
             "brand": brand,
             "target_brands": [brand],
@@ -175,36 +252,12 @@ def write_all(payload: Dict[str, Any], paths, adapter=None) -> List[Path]:
                 r for r in payload.get("rejected") or []
                 if match_brand((r.get("payload") or {}).get("brand") or "", [brand])
             ],
-        }, paths.file(_brand_filename_part(brand), ".json")))
+        }, _brand_filename_part(brand))
 
     for brand, rows in sorted(group_by_brand(products).items()):
-        written.append(_write_csv(
-            rows, PRODUCT_COLUMNS,
-            paths.file(_brand_filename_part(brand), ".csv"),
-        ))
+        put_csv(rows, PRODUCT_COLUMNS, _brand_filename_part(brand))
 
-    written.append(write_json({**shared, "campaigns": campaigns},
-                              paths.file("campaigns", ".json")))
-    written.append(_write_csv(campaigns, CAMPAIGN_COLUMNS,
-                              paths.file("campaigns", ".csv")))
-
-    wanted = payload.get("target_brands") or payload.get("brands") or []
-    if adapter is not None and wanted:
-        for campaign in campaigns:
-            verdict = adapter.campaign_brands(_as_campaign(campaign), wanted)
-            cid = campaign.get("campaign_id")
-            if verdict is None:
-                brands_by_campaign.pop(cid, None)
-            elif cid:
-                brands_by_campaign.setdefault(cid, set()).update(verdict)
-
-    on_brands = [{**c, "brands": sorted(brands_by_campaign[c["campaign_id"]])}
-                 for c in campaigns if c.get("campaign_id") in brands_by_campaign]
-    written.append(write_json({**shared, "campaigns": on_brands},
-                              paths.file("brands_campaigns", ".json")))
-    written.append(_write_csv(
-        [{**c, "brands": ";".join(c["brands"])} for c in on_brands],
-        CAMPAIGN_COLUMNS + ["brands"], paths.file("brands_campaigns", ".csv")))
-    written.append(_write_csv(_flat_rejections(payload), REJECTED_COLUMNS,
-                              paths.file("rejected", ".csv")))
+    put_json({**shared, "campaigns": campaigns}, "campaigns")
+    put_csv(campaigns, CAMPAIGN_COLUMNS, "campaigns")
+    put_csv(_flat_rejections(payload), REJECTED_COLUMNS, "rejected")
     return written

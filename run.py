@@ -121,6 +121,22 @@ def parse_args(argv=None) -> argparse.Namespace:
              "Needs only --retailer; --brands is not required.",
     )
     parser.add_argument(
+        "--ignore-robots",
+        action="store_true",
+        help="Crawl URLs the site's robots.txt disallows. Lookfantastic "
+             "disallows its facetFilters listings, which is the only way to "
+             "filter an offer page by brand. Off by default: turning it on is "
+             "a deliberate choice to crawl paths the retailer asks bots not to.",
+    )
+    parser.add_argument(
+        "--formats",
+        nargs="+",
+        choices=["json", "csv"],
+        default=["json", "csv"],
+        help="Which file formats to write. Default: both. Use --formats csv "
+             "for CSV only. Does not affect the run log.",
+    )
+    parser.add_argument(
         "--list-retailers",
         action="store_true",
         help="List the available retailer adapters and exit.",
@@ -214,7 +230,7 @@ def main(argv=None) -> int:
 
     started_at = utc_now()
     run_id = new_run_id(started_at)
-    paths = RunPaths(out_dir, adapter, started_at)
+    paths = RunPaths(out_dir, adapter, started_at, run_id)
 
     lock = None
     try:
@@ -255,6 +271,7 @@ def main(argv=None) -> int:
             strict_brand=args.strict_brand,
             resolve_categories=args.resolve_categories,
             campaigns_only=args.campaigns_only,
+            obey_robots=not args.ignore_robots,
             max_products=args.max_products,
             crawldir=str(args.crawl_dir) if args.crawl_dir else None,
             cache_dir=str(args.cache_dir) if args.cache_dir else None,
@@ -296,12 +313,14 @@ def main(argv=None) -> int:
             rejected=spider.rejected,
             stats=stats,
             run_id=run_id,
+            campaigns_only=args.campaigns_only,
+            offer_products=list(spider.offer_products.values()),
         )
 
         if partial_writer:
             partial_writer.flush()
 
-        written = write_all(payload, paths, adapter)
+        written = write_all(payload, paths, adapter, formats=args.formats)
 
         if partial_writer:
             partial_writer.discard()
@@ -309,7 +328,15 @@ def main(argv=None) -> int:
         run_stats = payload["run_stats"]
         print("\n--- run summary ---")
 
-        if args.brands:
+        if args.brands and args.campaigns_only:
+            found = {b: 0 for b in args.brands}
+            for row in spider.offer_products.values():
+                if row.get("brand") in found:
+                    found[row["brand"]] += 1
+            for brand, count in sorted(found.items(), key=lambda kv: -kv[1]):
+                print(f"  {brand:22} {count:>5} offer listing(s)")
+
+        elif args.brands:
             found = {b: 0 for b in args.brands}
             for product in spider.products.values():
                 key = product.brand_matched_to or product.brand

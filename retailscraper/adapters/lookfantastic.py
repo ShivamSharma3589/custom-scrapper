@@ -4,7 +4,7 @@ import json
 import re
 from datetime import datetime, timezone
 from typing import Any, Dict, Iterable, List, Optional, Sequence
-from urllib.parse import parse_qs, urlparse
+from urllib.parse import parse_qs, quote, quote_plus, urlparse
 
 from config import first_proxy
 from ..models import (
@@ -33,6 +33,78 @@ _BRAND_PAGE_RE = re.compile(r"/c/brands/([^/]+)/?$")
 
 _SAVE_AMOUNT_RE = re.compile(r"Save\s*[£$€]?\s*([\d.,]+)", re.IGNORECASE)
 _SAVE_PERCENT_RE = re.compile(r"\(\s*([\d.]+)\s*%\s*Off\s*\)", re.IGNORECASE)
+
+_MONEY_RE = re.compile(r"[£$€]\s*([\d,]+(?:\.\d{1,2})?)")
+
+
+def _first_text(node, selector: str) -> Optional[str]:
+    """Text of the first match for a selector inside one card."""
+    found = node.css(selector)
+    return found[0].get_all_text() if found else None
+
+
+def _card_for(node):
+    """The product card a grid anchor sits in.
+
+    A card holds several anchors (image, title, quick buy) at different
+    depths, so climb until one carries the title element.
+    """
+    current = node
+    for _ in range(5):
+        current = getattr(current, "parent", None)
+        if current is None:
+            return None
+        if current.css(".product-item-title"):
+            return current
+    return None
+
+
+def _card_offer(card, title: Optional[str]) -> Optional[str]:
+    """The offer flash on a product card, e.g. "Save 25%".
+
+    It carries no class of its own, so read what sits between the title and
+    the price labels, which are both stable landmarks.
+    """
+    text = " ".join((card.get_all_text() or "").split())
+    if title:
+        head = " ".join(title.split())
+        if text.startswith(head):
+            text = text[len(head):]
+
+    cut = re.search(r"(Recommended Retail Price|Current price|RRP)\b", text)
+    if cut:
+        text = text[:cut.start()]
+    return clean_text(text.strip(" |-–—:,")) or None
+
+
+def _card_prices(card):
+    """(current, original) from a product card's price block.
+
+    The was-price is the struck-through one; anything else is what you pay.
+    A card with a single price is not discounted, so both are that price.
+    """
+    block = card.css(".product-item-price")
+    if not block:
+        return None, None
+
+    original = None
+    for node in block[0].css(".line-through"):
+        found = _MONEY_RE.search(node.get_all_text() or "")
+        if found:
+            original = float(found.group(1).replace(",", ""))
+            break
+
+    current = None
+    for node in block[0].css("span"):
+        text = node.get_all_text() or ""
+        if "line-through" in (node.attrib.get("class") or ""):
+            continue
+        found = _MONEY_RE.search(text)
+        if found:
+            current = float(found.group(1).replace(",", ""))
+            break
+
+    return current, original
 
 
 @register
@@ -245,6 +317,19 @@ class LookfantasticAdapter(RetailerAdapter):
 
     MAX_OFFER_PAGES = 100
 
+    BRAND_FACET = "en_brand_content"
+
+    #: Lookfantastic's own spelling, taken from the facet dropdown. The A-Z
+    BRAND_FACET_VALUES = {
+        "clinique": "Clinique",
+        "mac": "MAC",
+        "tom ford": "Tom Ford",
+        "estee lauder": "Estée Lauder",
+        "bobbi brown": "Bobbi Brown",
+        "too faced": "Too Faced",
+        "jo malone": "Jo Malone London",
+    }
+
     def __init__(self) -> None:
         self.listed_offer_pages: List[str] = []
         self._capped_offers: set = set()
@@ -339,6 +424,77 @@ class LookfantasticAdapter(RetailerAdapter):
                 landing_url=page,
             ))
         return campaigns
+
+    def brand_facet_value(self, brand: str) -> Optional[str]:
+        """Lookfantastic's own spelling of a brand, for the listing facet."""
+        return self.BRAND_FACET_VALUES.get(re.sub(r"[^a-z ]+", "", brand.casefold()).strip())
+
+    def brand_offer_url(self, offer_url: str, brands: Sequence[str],
+                        page: int = 1) -> Optional[str]:
+        """An offer page narrowed to all of our brands in one request"""
+        values = [v for v in (self.brand_facet_value(b) for b in brands) if v]
+        if not values:
+            return None
+        base = offer_url.split("?")[0].rstrip("/")
+        facet = "%7C".join(quote_plus(f"{self.BRAND_FACET}:{v}")
+                           for v in dict.fromkeys(values))
+        return f"{base}?pageNumber={page}&facetFilters={facet}"
+
+    def brand_from_title(self, title: Optional[str],
+                         brands: Sequence[str]) -> Optional[str]:
+        """Which requested brand a product title belongs to"""
+        text = fold_accents(title or "").casefold()
+        for brand in sorted(brands, key=len, reverse=True):
+            folded = fold_accents(brand).casefold()
+            if re.match(rf"{re.escape(folded)}(?![a-z0-9])", text):
+                return brand
+        return None
+
+    def offer_page_count(self, response) -> int:
+        """How many pages this listing has, from its own "Page 1 of N"."""
+        found = re.search(r"Page\s+\d+\s+of\s+(\d+)", response.html_content or "")
+        return int(found.group(1)) if found else 1
+
+    def extract_offer_products(self, response, brands: Sequence[str]) -> List[Dict[str, Any]]:
+        """Our brands' products on a filtered offer page, read from the grid."""
+        rows: Dict[str, Dict[str, Any]] = {}
+        for node in response.css("#product-list a"):
+            href = (node.attrib.get("href") or "").split("?")[0]
+            if href.startswith("/"):
+                href = f"https://{self.domain}{href}"
+            if not self.is_product_url(href):
+                continue
+
+            card = _card_for(node)
+            if card is None:
+                continue
+
+            product_id = self._product_id_from_url(href)
+            if not product_id or product_id in rows:
+                continue
+
+            title = clean_text(_first_text(card, ".product-item-title"))
+            brand = self.brand_from_title(title, brands)
+            if not brand:
+                continue
+
+            current, original = _card_prices(card)
+            rows[product_id] = {
+                "brand": brand,
+                "product_id": product_id,
+                "product_title": title,
+                "offer_text": _card_offer(card, title),
+                "product_url": href,
+                "current_price": current,
+                "original_price": original,
+                "discount_amount": (round(original - current, 2)
+                                    if current is not None and original else None),
+                "discount_percent": (round((original - current) / original * 100, 1)
+                                     if current is not None and original else None),
+                "currency": "GBP",
+                "source_url": str(response.url),
+            }
+        return list(rows.values())
 
     def offer_page_products(self, response) -> List[str]:
         """Ids of the products in this offer, from the page's product grid."""

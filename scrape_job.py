@@ -41,6 +41,10 @@ BRANDS = [
 # True = offers only, a minute or two. False = the full crawl, hours.
 CAMPAIGNS_ONLY = True
 
+OUTPUT_FORMATS = ["json", "csv"]
+
+IGNORE_ROBOTS = True
+
 MAX_PRODUCTS = None
 
 HERE = Path(__file__).resolve().parent
@@ -83,11 +87,14 @@ def scrape(retailer: str) -> dict:
 
     command = [sys.executable, str(HERE / "run.py"),
                "--retailer", retailer, "--out-dir", str(OUTPUT),
-               "--brands", *BRANDS]
+               "--brands", *BRANDS,
+               "--formats", *OUTPUT_FORMATS]
     if CAMPAIGNS_ONLY:
         command.append("--campaigns-only")
     elif MAX_PRODUCTS:
         command += ["--max-products", str(MAX_PRODUCTS)]
+    if IGNORE_ROBOTS:
+        command.append("--ignore-robots")
     if retailer in REFUSAL_LIMITS:
         command += ["--refusal-limit", str(REFUSAL_LIMITS[retailer])]
 

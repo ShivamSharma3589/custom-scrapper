@@ -49,9 +49,7 @@ class Campaign:
         self.promotion_text = strip_call_to_action(self.promotion_text)
 
         if not self.campaign_id:
-            self.campaign_id = _stable_id(
-                self.retailer, self.promotion_text, self.scope, self.scope_value
-            )
+            self.campaign_id = _stable_id(self.retailer, self.promotion_text)
 
     def to_dict(self) -> Dict[str, Any]:
         return asdict(self)
