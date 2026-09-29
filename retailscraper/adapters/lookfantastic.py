@@ -237,12 +237,19 @@ class LookfantasticAdapter(RetailerAdapter):
 
     OFFER_SITEMAP = "https://www.lookfantastic.com/sitemapindex-list.xml.gz"
 
+    #: The A-Z of everything Lookfantastic stocks, served as plain HTML.
+    BRAND_INDEX = "https://www.lookfantastic.com/c/brands/"
+
+    #: Links in the A-Z that are navigation, not brands.
+    NOT_A_BRAND = {"brands", "view all brands", "a-z of brands", "shop all brands"}
+
     MAX_OFFER_PAGES = 100
 
     def __init__(self) -> None:
         self.listed_offer_pages: List[str] = []
         self._capped_offers: set = set()
         self._candidates: Dict[str, set] = {}
+        self._stocked: Optional[List[str]] = None
 
     def prepare(self, brands: Sequence[str]) -> List[str]:
         """Read every offer and sale page from the list sitemap."""
@@ -266,6 +273,29 @@ class LookfantasticAdapter(RetailerAdapter):
         self.listed_offer_pages = list(dict.fromkeys(
             url for url in pages if re.search(r"/[^/]*(?:offer|sale)[^/]*/", url)))
         return []
+
+    def stocked_brands(self) -> List[str]:
+        """Every brand in Lookfantastic's A-Z, read once and kept."""
+        if self._stocked is not None:
+            return self._stocked
+
+        from scrapling.fetchers import Fetcher
+
+        names = set()
+        try:
+            response = Fetcher.get(self.BRAND_INDEX, stealthy_headers=True,
+                                   timeout=60, proxy=first_proxy())
+            for node in response.css("a[href]"):
+                if "/c/brands/" not in (node.attrib.get("href") or ""):
+                    continue
+                text = clean_text(node.get_all_text()) or ""
+                if 1 < len(text) < 40 and text.casefold() not in self.NOT_A_BRAND:
+                    names.add(text)
+        except Exception:
+            names = set()
+
+        self._stocked = sorted(names)
+        return self._stocked
 
     def campaign_discovery_urls(self) -> List[str]:
         """The hubs, plus every offer page the list sitemap names."""
@@ -328,6 +358,9 @@ class LookfantasticAdapter(RetailerAdapter):
             url = (campaign.landing_url or "").split("?")[0]
             if urlparse(url).netloc == self.domain and not self.is_product_url(url):
                 links.append(url)
+
+        if self.campaigns_only:
+            return list(dict.fromkeys(links))
 
         address = urlparse(str(response.url))
         page = int(parse_qs(address.query).get("pageNumber", ["1"])[0])

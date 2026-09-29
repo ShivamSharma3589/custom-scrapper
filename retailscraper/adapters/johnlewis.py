@@ -123,6 +123,7 @@ class JohnLewisAdapter(RetailerAdapter):
         self._stated_results: Dict[str, int] = {}
         self._wanted_slugs: List[str] = []
         self._offer_depth: Dict[str, int] = {}
+        self._stocked: Optional[List[str]] = None
 
     def configure_session(self, manager) -> None:
         """A stealth browser per proxy: the first fetches, the rest are spares."""
@@ -203,6 +204,31 @@ class JohnLewisAdapter(RetailerAdapter):
         totals = [self._stated_results[self._brand_slug(b)]
                   for b in brands if self._brand_slug(b) in self._stated_results]
         return sum(totals) if totals else None
+
+    def stocked_brands(self) -> List[str]:
+        """Every brand named in John Lewis's A-Z, read once and kept."""
+        if self._stocked is not None:
+            return self._stocked
+
+        from scrapling.fetchers import Fetcher
+
+        names = set()
+        try:
+            response = Fetcher.get(_BRAND_INDEX, stealthy_headers=True,
+                                   timeout=60, proxy=first_proxy())
+
+            letters = (self._page_state(response)
+                       .get("props", {}).get("pageProps", {}).get("brands") or {})
+            for entries in letters.values():
+                for entry in entries or []:
+                    label = clean_text(entry.get("label")) if isinstance(entry, dict) else None
+                    if label and 1 < len(label) < 40:
+                        names.add(label)
+        except Exception:
+            names = set()
+
+        self._stocked = sorted(names)
+        return self._stocked
 
     def brand_codes(self, brands: Sequence[str], resolve: bool = False) -> Dict[str, str]:
         """Just the page codes, for callers that do not need the slug."""
@@ -758,7 +784,8 @@ class JohnLewisAdapter(RetailerAdapter):
                 self._offer_depth[href] = min(self._offer_depth.get(href, depth + 1), depth + 1)
 
         size = _LISTING_SIZE_RE.search(response.html_content or "")
-        if "?" not in url and size and self._names_wanted_brand(page):
+        if (not self.campaigns_only and "?" not in url and size
+                and self._names_wanted_brand(page)):
             links += [f"{url}?page={n}" for n in range(2, int(size.group(2)) + 1)]
 
         return list(dict.fromkeys(links))

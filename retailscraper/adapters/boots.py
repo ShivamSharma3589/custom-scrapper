@@ -2,7 +2,7 @@
 
 import re
 from datetime import datetime, timezone
-from typing import Iterable, List, Optional, Sequence
+from typing import Dict, Iterable, List, Optional, Sequence
 from urllib.parse import parse_qs, urlparse
 
 from ..models import SCOPE_CATEGORY, SCOPE_PRODUCT, SCOPE_SITEWIDE, Campaign, Product
@@ -39,6 +39,9 @@ class BootsAdapter(RetailerAdapter):
 
     listing_page_size = 25
 
+    crawl_delay = 15.0
+    max_concurrent_requests = 1
+
     MAX_LIST_PAGES = 50
 
     supports_categories = True
@@ -64,6 +67,7 @@ class BootsAdapter(RetailerAdapter):
 
     def __init__(self) -> None:
         self._featured_only: set = set()
+        self._empty_lists: set = set()
 
     def warmup_url(self) -> Optional[str]:
         """The homepage, fetched only to get past bot protection."""
@@ -112,7 +116,7 @@ class BootsAdapter(RetailerAdapter):
             headless=True,
             google_search=True,
             network_idle=True,
-            timeout=120_000,
+            timeout=20_000,
             max_pages=2,
             proxy=proxy,
         ))
@@ -159,6 +163,9 @@ class BootsAdapter(RetailerAdapter):
                 self._featured_only.add(meta.get("brand"))
             return lists
 
+        if not added:
+            self._empty_lists.add(requested.path)
+
         page = int(parse_qs(requested.query).get("paging.index", ["0"])[0])
         if added and page + 1 < self.MAX_LIST_PAGES:
             return [f"https://{self.domain}/{path}?paging.index={page + 1}"
@@ -166,9 +173,16 @@ class BootsAdapter(RetailerAdapter):
         return []
 
     def crawl_warnings(self) -> List[str]:
-        return [f"{brand}: its Boots brand page links no product lists, so only "
-                f"the featured products on that page were collected"
-                for brand in sorted(self._featured_only)]
+        warnings = [f"{brand}: its Boots brand page links no product lists, so only "
+                    f"the featured products on that page were collected"
+                    for brand in sorted(self._featured_only)]
+        if self._empty_lists:
+            warnings.append(
+                f"{len(self._empty_lists)} product list(s) returned no products at "
+                f"all, so nothing behind them was read: "
+                + ", ".join(sorted(self._empty_lists)[:8])
+            )
+        return warnings
 
     def extract_product_links(self, response, brand: Optional[str] = None) -> List[str]:
         """Product URLs linked from a listing page, de-duplicated in page order."""
@@ -213,6 +227,116 @@ class BootsAdapter(RetailerAdapter):
             return True
         return (_WALL_MARKER in body and len(body) < _WALL_MAX_CHARS
                 and "<title" not in body.lower())
+
+    _TILE = "[class*='oct-teaser--theme-productTile']"
+    _BARE_PRICE_RE = re.compile(r"^\s*£\s?[\d,]+\.\d{2}\s*$")
+
+    def extract_products_from_listing(
+        self, response, brand: Optional[str] = None
+    ) -> List[Product]:
+        """Products read from a listing page's own tiles"""
+        if self.looks_blocked(response):
+            return []
+
+        now = datetime.now(timezone.utc).isoformat()
+        source = str(response.url)
+        found: Dict[str, Product] = {}
+
+        for tile in response.css(self._TILE):
+            url = self._tile_url(tile)
+            if not url:
+                continue
+            product_id = self._product_id_from_url(url)
+            if not product_id or product_id in found:
+                continue
+
+            title = self._tile_title(tile)
+            if not title:
+                continue
+
+            original, saving = self._tile_was_and_saving(tile)
+            current = self._tile_current(tile, original, saving)
+            if current is None:
+                continue
+
+            found[product_id] = Product(
+                retailer=self.display_name,
+                brand=clean_text(brand) or "",
+                brand_verified_by="listing_title" if brand else "unverified",
+                product_id=product_id,
+                product_title=title,
+                product_url=canonical_url(url),
+                source_url=source,
+                currency="GBP",
+                current_price=current,
+                original_price=original,
+                discount_amount=saving,
+                discount_percent=percent_off(original, current),
+                availability=None,
+                variant_count=1,
+                sku=product_id,
+                promotional_copy=self._tile_promotion(tile),
+                scraped_at=now,
+            )
+
+        return list(found.values())
+
+    def _tile_url(self, tile) -> Optional[str]:
+        """The product this tile links to."""
+        for node in tile.css("a"):
+            href = (node.attrib.get("href") or "").split("#")[0]
+            if href.startswith("/"):
+                href = f"https://{self.domain}{href}"
+            if self.is_product_url(href):
+                return href
+        return None
+
+    @staticmethod
+    def _tile_title(tile) -> Optional[str]:
+        """The tile's product name, taking the innermost title element."""
+        best = None
+        for node in tile.css("[class*='title']"):
+            text = clean_text(node.get_all_text()) or ""
+            text = re.sub(r"^none\s+", "", text)
+            if text and text.lower() != "none" and (best is None or len(text) < len(best)):
+                best = text
+        return best
+
+    @staticmethod
+    def _tile_was_and_saving(tile):
+        """(was, saving) as the tile states them, or (None, None)."""
+        def amount(selector, pattern):
+            for node in tile.css(selector):
+                match = re.search(pattern, clean_text(node.get_all_text()) or "", re.I)
+                if match:
+                    value, _ = parse_price(match.group(1))
+                    return value
+            return None
+
+        was = amount(".oct-teaser__productPriceWas", r"was\s*£\s?([\d,]+\.\d{2})")
+        saving = amount(".oct-teaser__product-price-wrapper", r"save\s*£\s?([\d,]+\.\d{2})")
+        return was, saving
+
+    def _tile_current(self, tile, was, saving) -> Optional[float]:
+        """What the tile is selling for now"""
+        if was is not None and saving is not None:
+            return round(was - saving, 2)
+        for node in tile.css("[class*='oct-text']"):
+            text = clean_text(node.get_all_text()) or ""
+            if self._BARE_PRICE_RE.match(text):
+                value, _ = parse_price(text)
+                if value is not None:
+                    return value
+        return None
+
+    @staticmethod
+    def _tile_promotion(tile) -> Optional[str]:
+        """Any offer wording the tile carries, beyond the bare "Offer" flag."""
+        for node in tile.css("[class*='promo'], [class*='flash']"):
+            text = clean_text(node.get_all_text()) or ""
+            if text and text.lower() not in {"offer", "none"} and len(text) < 160:
+                return text
+        return None
 
     def extract_product(
         self, response, target_brands: Sequence[str] = ()

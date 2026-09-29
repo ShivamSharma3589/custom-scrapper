@@ -22,6 +22,16 @@ if TYPE_CHECKING:  # pragma: no cover - import only for type checking
     from scrapling.engines.toolbelt.custom import Response
 
 
+def _names(text: str, brand: str) -> bool:
+    """True when `text` uses `brand` as a brand, not as an ordinary word"""
+    if not brand:
+        return False
+    found = re.search(rf"(?<![A-Za-z0-9]){re.escape(brand)}(?![A-Za-z0-9])", text, re.I)
+    if not found:
+        return False
+    return brand.islower() or not found.group(0).islower()
+
+
 class RetailerAdapter(ABC):
     """Base class for a single retailer's extraction logic."""
 
@@ -36,6 +46,8 @@ class RetailerAdapter(ABC):
     confirms_brand_stocking: bool = False
 
     listing_session_id: str = ""
+
+    campaigns_only: bool = False
 
     CATEGORY_SLUGS: Dict[str, str] = {}
 
@@ -172,6 +184,34 @@ class RetailerAdapter(ABC):
     def campaign_discovery_urls(self) -> List[str]:
         """The retailer's offers hub and sale landing pages."""
         return []
+
+    def stocked_brands(self) -> List[str]:
+        """Every brand this retailer sells, when it publishes a list of them"""
+        return []
+
+    def campaign_brands(self, campaign, wanted: Sequence[str]) -> Optional[List[str]]:
+        """Which of `wanted` an offer applies to, or None when it is not ours"""
+        from ..models import SCOPE_BRAND
+        from ..normalize import fold_accents
+        from ..validation import match_brand
+
+        catalogue = self.stocked_brands()
+        if not catalogue:
+            return None
+
+        if campaign.scope == SCOPE_BRAND and campaign.scope_value:
+            ours = [w for w in wanted if match_brand(campaign.scope_value, [w])]
+            return ours or None
+
+        text = fold_accents(campaign.promotion_text or "")
+        named = [b for b in catalogue if _names(text, fold_accents(b))]
+        if not named:
+            return list(wanted)
+
+        ours = [w for w in wanted
+                if any(match_brand(n, [w]) for n in named)
+                or _names(text, fold_accents(w))]
+        return ours or None
 
     def extract_campaign_directory(self, response: "Response") -> List[Campaign]:
         """Campaigns advertised in a page's offer navigation or hub tiles."""

@@ -134,7 +134,22 @@ def group_by_brand(rows: List[Dict[str, Any]]) -> Dict[str, List[Dict[str, Any]]
     return grouped
 
 
-def write_all(payload: Dict[str, Any], paths) -> List[Path]:
+def _as_campaign(row: Dict[str, Any]):
+    """A campaign row read back as the object the adapter expects."""
+    from .models import Campaign
+    return Campaign(
+        retailer=row.get("retailer") or "",
+        promotion_text=row.get("promotion_text") or "",
+        promotion_type=row.get("promotion_type") or "",
+        scope=row.get("scope") or "",
+        scope_value=row.get("scope_value"),
+        promo_code=row.get("promo_code"),
+        source_url=row.get("source_url"),
+        landing_url=row.get("landing_url"),
+    )
+
+
+def write_all(payload: Dict[str, Any], paths, adapter=None) -> List[Path]:
     """Write one run's results into this retailer's folders."""
     written: List[Path] = []
 
@@ -172,6 +187,16 @@ def write_all(payload: Dict[str, Any], paths) -> List[Path]:
                               paths.file("campaigns", ".json")))
     written.append(_write_csv(campaigns, CAMPAIGN_COLUMNS,
                               paths.file("campaigns", ".csv")))
+
+    wanted = payload.get("target_brands") or payload.get("brands") or []
+    if adapter is not None and wanted:
+        for campaign in campaigns:
+            verdict = adapter.campaign_brands(_as_campaign(campaign), wanted)
+            cid = campaign.get("campaign_id")
+            if verdict is None:
+                brands_by_campaign.pop(cid, None)
+            elif cid:
+                brands_by_campaign.setdefault(cid, set()).update(verdict)
 
     on_brands = [{**c, "brands": sorted(brands_by_campaign[c["campaign_id"]])}
                  for c in campaigns if c.get("campaign_id") in brands_by_campaign]

@@ -294,7 +294,7 @@ def main(argv=None) -> int:
         if partial_writer:
             partial_writer.flush()
 
-        written = write_all(payload, paths)
+        written = write_all(payload, paths, adapter)
 
         if partial_writer:
             partial_writer.discard()
@@ -372,8 +372,11 @@ def main(argv=None) -> int:
             expected_products=expected_products,
             abandoned=spider.abandoned,
             recovered_refusals=spider.recovered_refusals,
+            blocked=spider.blocked_total,
+            campaigns_only=args.campaigns_only,
         )
-        refused, total, share = refusal_rate(stats, spider.recovered_refusals)
+        refused, total, share = refusal_rate(
+            stats, spider.recovered_refusals, spider.blocked_total)
         if total:
             print(f"  requests          : {total} ({refused} refused, {share:.0%})")
         if spider.recovered_refusals:
@@ -414,6 +417,7 @@ def main(argv=None) -> int:
             files=[str(Path(p).relative_to(paths.root)) for p in written],
             abandoned=spider.abandoned,
             recovered_refusals=spider.recovered_refusals,
+            blocked=spider.blocked_total,
         )
         written.append(
             write_manifest(paths.file("manifest", ".json"), manifest))

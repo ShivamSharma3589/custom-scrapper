@@ -88,6 +88,7 @@ class RetailPromotionSpider(SitemapSpider):
         self.strict_brand = strict_brand
         self.resolve_categories = resolve_categories
         self.campaigns_only = campaigns_only
+        adapter.campaigns_only = campaigns_only
 
         self.sitemap_urls = [] if campaigns_only else list(adapter.sitemap_urls)
         self.allowed_domains = {adapter.domain}
@@ -132,7 +133,9 @@ class RetailPromotionSpider(SitemapSpider):
         self._switch_lock = asyncio.Lock()
 
         self.recovered_refusals = 0
+        self.blocked_total = 0
         self._refusals_by_url: Dict[str, int] = {}
+        self._warmup_blocks = 0
 
         super().__init__(crawldir=crawldir)
 
@@ -277,7 +280,18 @@ class RetailPromotionSpider(SitemapSpider):
     async def is_blocked(self, response) -> bool:
         """Note which brand a refused request belonged to, then defer."""
         blocked = await super().is_blocked(response) or self.adapter.looks_blocked(response)
+
+        if blocked and str(response.url).rstrip("/") == (self.adapter.warmup_url() or "").rstrip("/"):
+            self._warmup_blocks += 1
+            if self._warmup_blocks > self.max_blocked_retries:
+                self.logger.warning(
+                    "the warmup page kept being challenged; carrying on with the "
+                    "crawl rather than abandoning the run"
+                )
+                return False
+
         if blocked:
+            self.blocked_total += 1
             brand = self._brand_for_url(str(response.url))
             self.blocked_by_brand[brand] = self.blocked_by_brand.get(brand, 0) + 1
         self._refused_in_a_row = self._refused_in_a_row + 1 if blocked else 0

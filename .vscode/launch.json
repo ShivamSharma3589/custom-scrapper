@@ -1,0 +1,49 @@
+{
+  "version": "0.2.0",
+  "configurations": [
+    {
+      "name": "Lookfantastic: campaigns only (start here)",
+      "type": "debugpy",
+      "request": "launch",
+      "program": "${workspaceFolder}/run.py",
+      "args": ["--retailer", "lookfantastic", "--campaigns-only"],
+      "console": "integratedTerminal",
+      "cwd": "${workspaceFolder}",
+      "python": "${workspaceFolder}/.venv/Scripts/python.exe",
+      "justMyCode": true
+    },
+    {
+      "name": "Lookfantastic: products, 2 per brand",
+      "type": "debugpy",
+      "request": "launch",
+      "program": "${workspaceFolder}/run.py",
+      "args": ["--retailer", "lookfantastic", "--max-products", "2",
+               "--brands", "Clinique", "MAC"],
+      "console": "integratedTerminal",
+      "cwd": "${workspaceFolder}",
+      "python": "${workspaceFolder}/.venv/Scripts/python.exe",
+      "justMyCode": true
+    },
+    {
+      "name": "Any retailer: ask me (campaigns only)",
+      "type": "debugpy",
+      "request": "launch",
+      "program": "${workspaceFolder}/run.py",
+      "args": ["--retailer", "${input:retailer}", "--campaigns-only"],
+      "console": "integratedTerminal",
+      "cwd": "${workspaceFolder}",
+      "python": "${workspaceFolder}/.venv/Scripts/python.exe",
+      "justMyCode": true
+    }
+  ],
+  "inputs": [
+    {
+      "id": "retailer",
+      "type": "pickString",
+      "description": "Which retailer?",
+      "options": ["lookfantastic", "johnlewis", "asos", "allbeauty",
+                  "marksandspencer", "boots", "next", "amazon"],
+      "default": "lookfantastic"
+    }
+  ]
+}

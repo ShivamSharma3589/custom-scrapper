@@ -139,16 +139,21 @@ def run_lock(base: Path, adapter) -> Iterator[Path]:
 REFUSAL_STATUSES = (403, 429, 503)
 
 
-def refusal_rate(stats: Dict[str, Any], recovered: int = 0) -> Tuple[int, int, float]:
+def refusal_rate(
+    stats: Dict[str, Any], recovered: int = 0, blocked: Optional[int] = None
+) -> Tuple[int, int, float]:
     """(refused, total, share) for one run, ignoring refusals a retry got past."""
-    statuses = stats.get("response_status_count") or {}
     total = int(stats.get("requests_count") or 0)
-    refused = 0
-    for key, count in statuses.items():
-        match = re.search(r"(\d{3})", str(key))
-        if match and int(match.group(1)) in REFUSAL_STATUSES:
-            refused += int(count or 0)
-    refused = max(0, refused - max(0, recovered))
+
+    if blocked is None:
+        statuses = stats.get("response_status_count") or {}
+        blocked = 0
+        for key, count in statuses.items():
+            match = re.search(r"(\d{3})", str(key))
+            if match and int(match.group(1)) in REFUSAL_STATUSES:
+                blocked += int(count or 0)
+
+    refused = max(0, blocked - max(0, recovered))
     share = (refused / total) if total else 0.0
     return refused, total, share
 
@@ -163,6 +168,8 @@ def verdict(
     expected_products: Optional[int] = None,
     abandoned: Sequence[Any] = (),
     recovered_refusals: int = 0,
+    blocked: Optional[int] = None,
+    campaigns_only: bool = False,
 ) -> Tuple[str, Optional[str]]:
     """Did this run produce data worth loading? Returns (status, reason)."""
     if abandoned:
@@ -171,12 +178,17 @@ def verdict(
             "the products on them are missing"
         )
 
-    refused, total, share = refusal_rate(stats, recovered_refusals)
+    refused, total, share = refusal_rate(stats, recovered_refusals, blocked)
     if total and share > refusal_limit:
         return STATUS_FAILED, (
             f"{refused} of {total} requests refused "
             f"({share:.0%}, limit {refusal_limit:.0%})"
         )
+
+    if campaigns_only:
+        if campaigns is not None and campaigns == 0:
+            return STATUS_FAILED, "no campaigns found on a campaigns-only run"
+        return STATUS_OK, None
 
     missing = [b for b in brands_empty if b in set(brands_expected)]
     if missing:
@@ -217,9 +229,10 @@ def build_manifest(
     files: Sequence[str] = (),
     abandoned: Sequence[Any] = (),
     recovered_refusals: int = 0,
+    blocked: Optional[int] = None,
 ) -> Dict[str, Any]:
     """The record of one run: what was asked for, what came back, and why."""
-    refused, total, _ = refusal_rate(stats, recovered_refusals)
+    refused, total, _ = refusal_rate(stats, recovered_refusals, blocked)
     return {
         "run_id": run_id,
         "retailer": adapter.display_name,
