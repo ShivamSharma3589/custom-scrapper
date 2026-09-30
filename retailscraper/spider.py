@@ -91,6 +91,7 @@ class RetailPromotionSpider(SitemapSpider):
         self.resolve_categories = resolve_categories
         self.campaigns_only = campaigns_only
         adapter.campaigns_only = campaigns_only
+        adapter.obeys_robots = obey_robots
 
         self.sitemap_urls = [] if campaigns_only else list(adapter.sitemap_urls)
         self.allowed_domains = {adapter.domain}
@@ -515,30 +516,57 @@ class RetailPromotionSpider(SitemapSpider):
             f"after {response.url} ({len(members)} product(s) listed)"
         )
 
-        for request in self._brand_offer_requests(str(response.url)):
+        for request in self._brand_offer_requests(str(response.url), response):
             yield request
 
         for url in self.adapter.offer_page_links(response):
             yield Request(url, callback=self.parse_campaign_directory)
 
-    def _brand_offer_requests(self, offer_url: str) -> List[Any]:
-        """One request per brand for an offer page, when the retailer can filter."""
+    def _brand_offer_requests(self, offer_url: str, response=None) -> List[Any]:
+        """Read an offer page's products for our brands, narrowed where we can."""
         if not self.campaigns_only or not self.brands:
             return []
         if not hasattr(self.adapter, "brand_offer_url"):
             return []
 
         page = offer_url.split("?")[0]
-        if page in self._brand_offer_seen:
+        if self.adapter.offer_page_key(page) in self._brand_offer_seen:
             return []
 
         url = self.adapter.brand_offer_url(page, self.brands)
         if not url:
             return []
 
-        self._brand_offer_seen.add(page)
+        keys = {self.adapter.offer_page_key(page), self.adapter.offer_page_key(url)}
+        if keys & self._brand_offer_seen:
+            self._brand_offer_seen |= keys
+            return []
+        self._brand_offer_seen |= keys
+        if response is not None and url.rstrip("/") == str(response.url).rstrip("/"):
+            rows = self._collect_offer_products(response, page, 1)
+            if not self.adapter.wants_next_offer_page(response, 1, len(rows)):
+                return []
+            nxt = self.adapter.brand_offer_url(str(response.url), self.brands, 2)
+            return [Request(nxt, callback=self.parse_brand_offer,
+                            meta={"offer_url": page, "page": 2})] if nxt else []
         return [Request(url, callback=self.parse_brand_offer,
                         meta={"offer_url": page, "page": 1})]
+
+    def _collect_offer_products(self, response, offer_url: str, page: int) -> List[Dict[str, Any]]:
+        """Keep this page's products for our brands, and say how many."""
+        rows = self.adapter.extract_offer_products(response, self.brands)
+        if getattr(self.adapter, "campaigns_stated_on_product", False):
+            for campaign in self.adapter.extract_campaigns(response):
+                self._record_campaign(campaign)
+        for row in rows:
+            self.offer_products[(offer_url, row["product_id"])] = {
+                **row, "offer_url": offer_url,
+            }
+        self.logger.info(
+            f"brand offer: page {page}/{self.adapter.offer_page_count(response)} "
+            f"on {offer_url} -- {len(rows)} product(s)"
+        )
+        return rows
 
     async def parse_brand_offer(self, response) -> AsyncGenerator[Any, None]:
         """Read one brand's products off a filtered offer page."""
@@ -546,20 +574,10 @@ class RetailPromotionSpider(SitemapSpider):
         offer_url = meta.get("offer_url")
         page = int(meta.get("page") or 1)
 
-        rows = self.adapter.extract_offer_products(response, self.brands)
-        for row in rows:
-            self.offer_products[(offer_url, row["product_id"])] = {
-                **row, "offer_url": offer_url,
-            }
+        rows = self._collect_offer_products(response, offer_url, page)
 
-        total = self.adapter.offer_page_count(response)
-        self.logger.info(
-            f"brand offer: page {page}/{total} on {offer_url} "
-            f"-- {len(rows)} product(s)"
-        )
-
-        if rows and page < total:
-            nxt = self.adapter.brand_offer_url(offer_url, self.brands, page + 1)
+        if self.adapter.wants_next_offer_page(response, page, len(rows)):
+            nxt = self.adapter.brand_offer_url(str(response.url), self.brands, page + 1)
             if nxt:
                 yield Request(nxt, callback=self.parse_brand_offer,
                               meta={**meta, "page": page + 1})

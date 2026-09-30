@@ -1,13 +1,7 @@
-r"""The scheduled job. Edit the settings below, then run it.
-
-Windows Task Scheduler:
-
-    Program    <this folder>\.venv\Scripts\python.exe
-    Arguments  scrape_job.py
-    Start in   <this folder>
-
-Retailers run one after another. Every run appends a line per retailer to
-output/scrape_job.log.
+"""
+    The scheduled job. Edit the settings below, then run it.
+    Retailers run one after another. Every run appends a line per retailer to
+    output/scrape_job.log.
 """
 
 import json
@@ -16,9 +10,9 @@ import sys
 from datetime import datetime
 from pathlib import Path
 
-# Uncomment the shops to scrape. Names: python run.py --list-retailers
+# Uncomment the shops to scrape
 RETAILERS = [
-    "lookfantastic",
+    # "lookfantastic",
     "johnlewis",
     # "boots",
     # "allbeauty",

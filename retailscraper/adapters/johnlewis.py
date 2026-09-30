@@ -30,6 +30,7 @@ from ..promotions import (
     is_browse_facet,
     is_confident_offer,
 )
+from ..validation import match_brand
 from .base import ListingPage, RetailerAdapter, register
 from config import first_proxy
 
@@ -74,6 +75,28 @@ _BRAND_INDEX = "https://www.johnlewis.com/brands/all"
 
 _BRAND_LINK_RE = re.compile(r'/brand/([^/\s<>"]+)/_/N-(\w+)')
 
+#: The Endeca code on an offers listing: the part after `/_/N-`.
+_OFFER_FACET_RE = re.compile(r"/_/N-([A-Za-z0-9]+)$")
+
+#: A price on a card, which may be a range ("£27.00 – £86.00") when the
+#: product has variants; the low end is the one to record.
+_JL_MONEY_RE = re.compile(r"[£$€]\s*([\d,]+(?:\.\d{1,2})?)")
+
+
+def _first_text(node, selector: str) -> Optional[str]:
+    """Text of the first match for a selector inside one card."""
+    found = node.css(selector)
+    return found[0].get_all_text() if found else None
+
+
+def _jl_price(card, selector: str) -> Optional[float]:
+    """The lowest amount shown by one price element on a card."""
+    text = _first_text(card, selector)
+    if not text:
+        return None
+    amounts = [float(a.replace(",", "")) for a in _JL_MONEY_RE.findall(text)]
+    return min(amounts) if amounts else None
+
 _LISTING_SIZE_RE = re.compile(
     r'"results"\s*:\s*(\d+)\s*,\s*"pagesAvailable"\s*:\s*(\d+)'
 )
@@ -101,6 +124,21 @@ class JohnLewisAdapter(RetailerAdapter):
     supports_categories = True
 
     confirms_brand_stocking = True
+    keeps_brand_named_campaigns = True
+    campaigns_stated_on_product = True
+
+    SKIP_DEPARTMENTS = {
+        "home-furniture-offers", 
+        "electrical-offers", 
+        "womenswear-offers",
+        "menswear-offers", 
+        "baby-childrenswear-offers", 
+        "toys-special-offers",
+        "sports-leisure-offers",
+    }
+
+    ROBOTS_FACET_BRANDS = 4
+    MAX_FACET_BRANDS = 12
 
     CATEGORY_SLUGS = {
         "skincare": "skin care",
@@ -123,7 +161,9 @@ class JohnLewisAdapter(RetailerAdapter):
         self._stated_results: Dict[str, int] = {}
         self._wanted_slugs: List[str] = []
         self._offer_depth: Dict[str, int] = {}
+        self._offer_keys_seen: set = set()
         self._stocked: Optional[List[str]] = None
+        self._stocked_slug_set: Optional[set] = None
 
     def configure_session(self, manager) -> None:
         """A stealth browser per proxy: the first fetches, the rest are spares."""
@@ -153,7 +193,7 @@ class JohnLewisAdapter(RetailerAdapter):
     @classmethod
     def _brand_slug(cls, brand: str) -> str:
         """Brand name -> the slug John Lewis uses in its brand-page URLs."""
-        key = brand.strip().lower()
+        key = cls._fold_slug(brand.strip())
         if key in cls.BRAND_SLUG_OVERRIDES:
             return cls.BRAND_SLUG_OVERRIDES[key]
         return re.sub(r"[^a-z0-9]+", "-", key).strip("-")
@@ -779,7 +819,13 @@ class JohnLewisAdapter(RetailerAdapter):
             path = href[len(f"https://{self.domain}"):] if href.startswith(f"https://{self.domain}/") else ""
             if not path.startswith(("/special-offers/", "/browse/special-offers/")):
                 continue
+            if self._is_other_department(path) or self._is_other_brand_page(path):
+                continue
             if follow_all or self._names_wanted_brand(href, clean_text(node.get_all_text()) or ""):
+                key = self.offer_page_key(href)
+                if key in self._offer_keys_seen:
+                    continue
+                self._offer_keys_seen.add(key)
                 links.append(href)
                 self._offer_depth[href] = min(self._offer_depth.get(href, depth + 1), depth + 1)
 
@@ -789,6 +835,45 @@ class JohnLewisAdapter(RetailerAdapter):
             links += [f"{url}?page={n}" for n in range(2, int(size.group(2)) + 1)]
 
         return list(dict.fromkeys(links))
+
+    def _is_other_department(self, path: str) -> bool:
+        """True when an offers link sits under a department we do not track."""
+        parts = [seg for seg in path.split("/_/")[0].split("/") if seg]
+        if "special-offers" not in parts:
+            return False
+        after = parts[parts.index("special-offers") + 1:]
+        return bool(after) and after[0].lower() in self.SKIP_DEPARTMENTS
+
+    def offer_page_key(self, url: str) -> str:
+        """One key per listing, ignoring the brand slugs John Lewis adds to the path"""
+        base = url.split("?")[0].rstrip("/")
+        found = _OFFER_FACET_RE.search(base)
+        if not found:
+            return base
+        kept = [seg for seg in base[:found.start()].split("/") if seg
+                and self._fold_slug(seg) not in self._wanted_slugs
+                and self._fold_slug(seg) not in self._stocked_slugs()]
+        return "/".join(kept) + "|" + "Z".join(sorted(set(found.group(1).split("Z"))))
+
+    def _is_other_brand_page(self, path: str) -> bool:
+        """True for an offers page already narrowed to a brand that is not ours."""
+        if not self._wanted_slugs:
+            return False
+
+        segments = [s for s in path.split("/_/")[0].split("/") if s]
+        for segment in segments:
+            slug = unquote(segment).lower()
+            if slug in self._wanted_slugs:
+                return False
+            if slug in self._stocked_slugs():
+                return True
+        return False
+
+    def _stocked_slugs(self) -> set:
+        """Slugs of every brand in the A-Z, to tell a brand segment from a category."""
+        if self._stocked_slug_set is None:
+            self._stocked_slug_set = {self._brand_slug(b) for b in self.stocked_brands()}
+        return self._stocked_slug_set
 
     def _names_wanted_brand(self, *texts: str) -> bool:
         """True when a URL or link text names one of the requested brands."""
@@ -800,6 +885,102 @@ class JohnLewisAdapter(RetailerAdapter):
         """Ids of the products an offers listing shows."""
         return [pid for pid in (self.product_id_from_url(u)
                                 for u in self.extract_product_links(response)) if pid]
+
+    def brand_offer_url(self, offer_url: str, brands: Sequence[str],
+                        page: int = 1) -> Optional[str]:
+        """An offers listing, narrowed to our brands where the page allows it"""
+        base = offer_url.split("?")[0].rstrip("/")
+
+        found = _OFFER_FACET_RE.search(base)
+        if found and not self._has_brand_facet(base):
+            already = found.group(1).count("Z")
+            cap = (max(self.ROBOTS_FACET_BRANDS - already, 0) if self.obeys_robots
+                   else self.MAX_FACET_BRANDS)
+            codes = [c for c in dict.fromkeys(self._brand_code(b) for b in brands) if c]
+            if codes and cap:
+                base += "".join(f"Z{c}" for c in codes[:cap])
+
+        return f"{base}?page={page}" if page > 1 else base
+
+    def _has_brand_facet(self, base: str) -> bool:
+        """True when a listing is already narrowed to a single brand"""
+        for segment in [s for s in base.split("/_/")[0].split("/") if s]:
+            slug = self._fold_slug(segment)
+            if slug in self._wanted_slugs or slug in self._stocked_slugs():
+                return True
+        return False
+
+    def _brand_code(self, brand: str) -> Optional[str]:
+        """This brand's Endeca code, from the A-Z index we already resolve."""
+        pages = self.brand_pages([brand], resolve=False) or {}
+        entry = pages.get(self._brand_slug(brand)) or {}
+        return entry.get("code")
+
+    def offer_page_count(self, response) -> int:
+        """Highest page this listing links to; the control shows a moving window."""
+        pages = [int(n) for n in
+                 re.findall(r'data-testid="page-btn-(\d+)"', response.html_content or "")]
+        return max(pages) if pages else 1
+
+    def wants_next_offer_page(self, response, page: int, found: int) -> bool:
+        """Page to the end regardless of this page's yield"""
+        return page < self.offer_page_count(response)
+
+    def _listing_promotions(self, response) -> Dict[str, List[str]]:
+        """Every promotion this listing states, per product id."""
+        listing = (self._page_state(response)
+                   .get("props", {}).get("pageProps", {}).get("productListingData"))
+        if not isinstance(listing, dict):
+            return {}
+        stated: Dict[str, List[str]] = {}
+        for item in listing.get("products") or []:
+            if isinstance(item, dict) and item.get("productId") is not None:
+                stated[str(item["productId"])] = self._promotional_titles(item.get("messaging"))
+        return stated
+
+    def extract_offer_products(self, response, brands: Sequence[str]) -> List[Dict[str, Any]]:
+        """Our brands' products on an offers listing, read from the grid."""
+        rows: Dict[str, Dict[str, Any]] = {}
+        stated = self._listing_promotions(response)
+        for card in response.css("article[data-product-id]"):
+            product_id = card.attrib.get("data-product-id")
+            if not product_id or product_id in rows:
+                continue
+
+            listed = clean_text(_first_text(card, '[class*="Brand_title__brand"]'))
+            brand = match_brand(listed or "", list(brands)) if listed else None
+            if not brand:
+                continue
+
+            name = clean_text(_first_text(card, '[class*="Title_title__desc"]'))
+            current, original = (_jl_price(card, '[class*="price_price__now"]'),
+                                 _jl_price(card, '[class*="price_price__prev"]'))
+            href = next((n.attrib.get("href") for n in card.css("a[href]")
+                         if self.product_id_from_url(n.attrib.get("href") or "")), None)
+
+            # The page state lists every promotion; the card renders only the first.
+            texts = list(stated.get(product_id) or [])
+            if not texts:
+                shown = clean_text(_first_text(card, '[class*="PromoMessages_message"]'))
+                texts = [shown] if shown else []
+
+            rows[product_id] = {
+                "brand": brand,
+                "product_id": product_id,
+                "product_title": " ".join(x for x in (listed, name) if x) or None,
+                "offer_text": texts[0] if texts else None,
+                "offer_texts": texts,
+                "product_url": href,
+                "current_price": current,
+                "original_price": original,
+                "discount_amount": (round(original - current, 2)
+                                    if current is not None and original else None),
+                "discount_percent": (round((original - current) / original * 100, 1)
+                                     if current is not None and original else None),
+                "currency": "GBP",
+                "source_url": str(response.url),
+            }
+        return list(rows.values())
 
     def extract_campaigns(self, response) -> List[Campaign]:
         """Promotions stated on this page."""

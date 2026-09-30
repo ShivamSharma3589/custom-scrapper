@@ -45,9 +45,18 @@ class RetailerAdapter(ABC):
 
     confirms_brand_stocking: bool = False
 
+    #: True when this retailer advertises promotions on the product card
+    campaigns_stated_on_product: bool = False
+
     listing_session_id: str = ""
 
     campaigns_only: bool = False
+
+    #: True when an offer that names one of our brands is worth keeping even
+    #: if no product on the crawled pages carried its wording.
+    keeps_brand_named_campaigns: bool = False
+
+    obeys_robots: bool = True
 
     CATEGORY_SLUGS: Dict[str, str] = {}
 
@@ -161,6 +170,10 @@ class RetailerAdapter(ABC):
         """Ids of the products an offers page lists as being in its offer."""
         return []
 
+    def offer_page_key(self, url: str) -> str:
+        """One key for every URL spelling of the same offers listing."""
+        return url.split("?")[0].rstrip("/")
+
     def offer_page_of(self, url: str) -> str:
         """The offers page a fetched URL belongs to, for tying an offer to its products."""
         return url
@@ -192,6 +205,21 @@ class RetailerAdapter(ABC):
     def has_brand_catalogue(self) -> bool:
         """True when this retailer publishes a brand list to filter against."""
         return type(self).stocked_brands is not RetailerAdapter.stocked_brands
+
+    def offer_page_count(self, response: "Response") -> int:
+        """How many pages this offers listing has."""
+        return 1
+
+    def wants_next_offer_page(self, response: "Response", page: int, found: int) -> bool:
+        """Whether to ask for the page after this one"""
+        return bool(found) and page < self.offer_page_count(response)
+
+    def campaign_named_brands(self, promotion_text: str, wanted: Sequence[str]) -> List[str]:
+        """Which of `wanted` an offer's own wording names."""
+        from ..normalize import fold_accents
+
+        text = fold_accents(promotion_text or "")
+        return [w for w in wanted if _names(text, fold_accents(w))]
 
     def campaign_brands(self, campaign, wanted: Sequence[str]) -> Optional[List[str]]:
         """Which of `wanted` an offer applies to, or None when it is not ours"""
