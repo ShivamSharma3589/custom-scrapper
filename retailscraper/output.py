@@ -13,7 +13,8 @@ from .validation import match_brand
 OFFER_PRODUCT_COLUMNS = [
     "brand", "product_title", "product_id", "offer_text",
     "current_price", "original_price", "discount_amount", "discount_percent",
-    "currency", "product_url", "campaign_ids", "offer_urls",
+    "currency", "product_url", "campaign_ids",
+    # "offer_urls",   # every offer page a product appeared on
 ]
 
 PRODUCT_COLUMNS = [
@@ -173,18 +174,19 @@ def _write_filtered(payload, campaigns, shared, put_json, put_csv) -> List[Path]
         seen = merged.get(row["product_id"])
         if seen is None:
             merged[row["product_id"]] = {
-                **row, "campaign_ids": set(ids), "offer_urls": {offer},
+                **row, "campaign_ids": set(ids),
+                # "offer_urls": {offer},
             }
             continue
         seen["campaign_ids"].update(ids)
-        seen["offer_urls"].add(offer)
+        # seen["offer_urls"].add(offer)
         if seen.get("original_price") is None and row.get("original_price") is not None:
             for field in ("original_price", "current_price",
                           "discount_amount", "discount_percent", "offer_text"):
                 seen[field] = row.get(field)
 
-    rows = [{**r, "campaign_ids": sorted(r["campaign_ids"]),
-             "offer_urls": sorted(r["offer_urls"])}
+    rows = [{**r, "campaign_ids": sorted(r["campaign_ids"])}
+            # "offer_urls": sorted(r["offer_urls"]),
             for r in merged.values()]
     for row in rows:
         row.pop("offer_url", None)
@@ -200,7 +202,8 @@ def _write_filtered(payload, campaigns, shared, put_json, put_csv) -> List[Path]
     put_json({**shared, "products": rows}, "filtered_campaigns/products")
     put_csv([{**r,
               "campaign_ids": ";".join(r["campaign_ids"]),
-              "offer_urls": ";".join(r["offer_urls"])} for r in rows],
+              # "offer_urls": ";".join(r["offer_urls"]),
+              } for r in rows],
             OFFER_PRODUCT_COLUMNS, "filtered_campaigns/products")
     return []
 

@@ -43,22 +43,6 @@ def _first_text(node, selector: str) -> Optional[str]:
     return found[0].get_all_text() if found else None
 
 
-def _card_for(node):
-    """The product card a grid anchor sits in.
-
-    A card holds several anchors (image, title, quick buy) at different
-    depths, so climb until one carries the title element.
-    """
-    current = node
-    for _ in range(5):
-        current = getattr(current, "parent", None)
-        if current is None:
-            return None
-        if current.css(".product-item-title"):
-            return current
-    return None
-
-
 def _card_offer(card, title: Optional[str]) -> Optional[str]:
     """The offer flash on a product card, e.g. "Save 25%".
 
@@ -70,6 +54,15 @@ def _card_offer(card, title: Optional[str]) -> Optional[str]:
         head = " ".join(title.split())
         if text.startswith(head):
             text = text[len(head):]
+
+    price = _first_text(card, ".product-item-price")
+    if price:
+        price = " ".join(price.split())
+        for probe in (price, price[:24]):
+            at = text.find(probe) if len(probe) >= 4 else -1
+            if at > -1:
+                text = text[:at]
+                break
 
     cut = re.search(r"(Recommended Retail Price|Current price|RRP)\b", text)
     if cut:
@@ -317,6 +310,9 @@ class LookfantasticAdapter(RetailerAdapter):
 
     MAX_OFFER_PAGES = 100
 
+    #: One product's tile in a listing grid, variants and all.
+    PRODUCT_CARD = "product-card-wrapper"
+
     BRAND_FACET = "en_brand_content"
 
     #: Lookfantastic's own spelling, taken from the facet dropdown. The A-Z
@@ -458,16 +454,15 @@ class LookfantasticAdapter(RetailerAdapter):
     def extract_offer_products(self, response, brands: Sequence[str]) -> List[Dict[str, Any]]:
         """Our brands' products on a filtered offer page, read from the grid."""
         rows: Dict[str, Dict[str, Any]] = {}
-        for node in response.css("#product-list a"):
-            href = (node.attrib.get("href") or "").split("?")[0]
+        for card in response.css(self.PRODUCT_CARD):
+            href = next((h for h in
+                         ((n.attrib.get("href") or "").split("?")[0] for n in card.css("a"))
+                         if self.is_product_url(f"https://{self.domain}{h}"
+                                                if h.startswith("/") else h)), None)
+            if not href:
+                continue
             if href.startswith("/"):
                 href = f"https://{self.domain}{href}"
-            if not self.is_product_url(href):
-                continue
-
-            card = _card_for(node)
-            if card is None:
-                continue
 
             product_id = self._product_id_from_url(href)
             if not product_id or product_id in rows:
