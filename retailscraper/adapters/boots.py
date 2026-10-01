@@ -4,14 +4,22 @@ import json
 import re
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Dict, Iterable, List, Optional, Sequence
-from urllib.parse import parse_qs, urlparse
+from typing import Any, Dict, Iterable, List, Optional, Sequence
+from urllib.parse import parse_qs, quote_plus, urlparse
 
-from ..models import SCOPE_CATEGORY, SCOPE_PRODUCT, SCOPE_SITEWIDE, Campaign, Product
+from ..models import (
+    SCOPE_BRAND,
+    SCOPE_CATEGORY,
+    SCOPE_PRODUCT,
+    SCOPE_SITEWIDE,
+    Campaign,
+    Product,
+)
 from ..normalize import (
     canonical_url,
     clean_text,
     extract_promo_code,
+    fold_accents,
     parse_price,
     percent_off,
 )
@@ -67,6 +75,72 @@ class BootsAdapter(RetailerAdapter):
     }
 
     CAMPAIGN_HUB_PATHS = ["/offers"]
+
+    #: Each brand's own "shop all" listing. Its Promotions facet is Boots's
+    #: complete list of offers on that brand, including ones no offers page
+    #: features. Verified against the live site one brand at a time.
+    BRAND_CAMPAIGN_PAGES = {
+        "clinique": "/clinique/clinique-full-range",
+        "mac": "/mac/mac-shop-all",
+        "estee lauder": "/estee-lauder/all-estee-lauder-products",
+        "bobbi brown": "/bobbi-brown/bobbi-brown-shop-all",
+        "too faced": "/too-faced-shop-all",
+        "tom ford": "/tom-ford-/tom-ford-all-fragrances",
+        "jo malone": "/jo-malone-london",
+        "jo malone london": "/jo-malone-london",
+    }
+
+    #: The Promotions facet's own rows. Boots files its offers here, so these
+    #: are taken as offers without having to look like one.
+    _PROMOTION_FACET_ROWS = (
+        "[data-testid*='promotion'] li.facet__child, "
+        "[id*='promotion'] li.facet__child, "
+        "[class*='promotion'] li.facet__child"
+    )
+
+    #: Facet rows that state a bundle's value or a stocking badge, not an offer.
+    _NOT_A_PROMOTION = re.compile(r"^(?:worth\s*[£$€]|exclusive to boots\b)", re.I)
+
+    #: Words that turn an "Exclusive to Boots ..." row into a real offer.
+    _OFFER_SIGNAL = re.compile(
+        r"\b(?:save|saving|free|gift|code|points|spend|off|half price|[0-9]+%)\b", re.I)
+
+    campaigns_stated_on_product = True
+
+    keeps_brand_named_campaigns = True
+
+    #: Offer departments outside beauty, from Boots's own offers hub. A link is
+    #: only dropped when its department is named here, so a new beauty page stays.
+    SKIP_DEPARTMENTS = {
+        "health-offers", "electrical-offers", "baby-child-offers",
+        "opticians-offers", "toiletries-offers", "health-sale",
+        "electrical-sale", "baby-child-sale", "toiletries-sale",
+        "opticians-sale", "photo-offers", "pharmacy-offers",
+    }
+
+    BRAND_FACET = "criteria.brand"
+    BRAND_FACET_JOIN = "---"
+
+    #: Boots's own spelling of each brand in the `criteria.brand` facet.
+    BRAND_FACET_VALUES = {
+        "clinique": "Clinique",
+        "mac": "M.A.C",
+        "m.a.c": "M.A.C",
+        "tom ford": "Tom Ford",
+        "estee lauder": "Estee Lauder",
+        "bobbi brown": "Bobbi Brown",
+        "too faced": "Too Faced",
+        "jo malone": "Jo Malone London",
+        "jo malone london": "Jo Malone London",
+    }
+
+    PRODUCT_CARD = ".oct-teaser--theme-productTile"
+
+    #: "View more" adds 24 at a time; the cap stops a runaway listing.
+    #: Parked: each click roughly doubles as the grid grows, so one listing cost
+    #: 40 minutes to reach 528 of 537. Set True to re-enable `_expand_listing`.
+    EXPAND_LISTING = False
+    MAX_VIEW_MORE_CLICKS = 60
 
     def __init__(self) -> None:
         self._featured_only: set = set()
@@ -154,8 +228,20 @@ class BootsAdapter(RetailerAdapter):
         return sorted(names)
 
     def campaign_discovery_urls(self) -> List[str]:
-        """The offers hub, for a campaigns-only run."""
-        return [f"https://{self.domain}{path}" for path in self.CAMPAIGN_HUB_PATHS]
+        """The offers hub plus every tracked brand's own listing."""
+        paths = list(self.CAMPAIGN_HUB_PATHS)
+        for path in dict.fromkeys(self.BRAND_CAMPAIGN_PAGES.values()):
+            if path not in paths:
+                paths.append(path)
+        return [f"https://{self.domain}{path}" for path in paths]
+
+    def _page_brand(self, url: str) -> Optional[str]:
+        """The brand whose own listing this is, when it is one."""
+        path = "/" + url.split(f"{self.domain}/", 1)[-1].split("?")[0].strip("/")
+        for brand, brand_path in self.BRAND_CAMPAIGN_PAGES.items():
+            if path == brand_path:
+                return self.BRAND_FACET_VALUES.get(brand, brand)
+        return None
 
     def scope_for_href(self, href: str):
         """Read an offer's reach from where its link points."""
@@ -176,11 +262,223 @@ class BootsAdapter(RetailerAdapter):
                 if not self.is_product_url(c.landing_url or "")]
 
     def offer_page_links(self, response) -> List[str]:
-        """Every offers or sale page linked from this page."""
+        """Every offers or sale page linked from this page, beauty only."""
         return [url for url in self._links(response)
                 if "?" not in url
                 and not self.is_product_url(url)
-                and re.search(r"offer|/sale(/|$)", urlparse(url).path)]
+                and re.search(r"offer|/sale(/|$)", urlparse(url).path)
+                and not self._is_other_department(urlparse(url).path)]
+
+    def brand_facet_value(self, brand: str) -> Optional[str]:
+        """Boots's spelling of a brand in its own brand facet."""
+        return self.BRAND_FACET_VALUES.get(fold_accents(brand).strip().casefold())
+
+    def _is_other_department(self, path: str) -> bool:
+        """True when an offers link sits under a department we do not track."""
+        parts = [seg for seg in path.split("?")[0].split("/") if seg]
+        return any(seg.lower() in self.SKIP_DEPARTMENTS for seg in parts)
+
+    def brand_offer_url(self, offer_url: str, brands: Sequence[str],
+                        page: int = 1) -> Optional[str]:
+        """An offers listing narrowed to our brands through Boots's brand facet.
+
+        Boots resets the page size on every fresh load, so there is no page 2
+        to ask for: one request reads the whole listing and the in-page
+        "View more" button supplies the rest.
+        """
+        if page > 1:
+            return None
+
+        values = [v for v in (self.brand_facet_value(b) for b in brands) if v]
+        if not values:
+            return None
+
+        base = offer_url.split("?")[0].rstrip("/")
+        joined = self.BRAND_FACET_JOIN.join(dict.fromkeys(values))
+        return f"{base}?{self.BRAND_FACET}={quote_plus(joined, safe='-')}"
+
+    def offer_request_kwargs(self) -> Dict[str, object]:
+        """Expand the listing in the page itself, when expansion is enabled."""
+        if not self.EXPAND_LISTING:
+            return {"page_action": self._dismiss_consent}
+        return {"page_action": self._expand_listing}
+
+    _EXPAND_PROMOTIONS = """() => {
+      const head = [...document.querySelectorAll('button,h3,h4,div,span')]
+          .find(e => (e.textContent||'').trim() === 'Promotions');
+      if (!head) return false;
+      const block = head.closest('div,section,fieldset');
+      if (!block) return false;
+      const more = [...block.querySelectorAll('button,span,a')]
+          .find(b => /view all/i.test((b.textContent||'').trim()));
+      if (!more) return false;
+      more.click();
+      return true;
+    }"""
+
+    async def _dismiss_consent(self, page) -> None:
+        """Decline non-essential cookies, then show every promotion in the facet.
+
+        The facet lists only its first ten rows until "View all" is pressed, so
+        without this a brand's less-advertised offers are never seen.
+        """
+        for script in (self._DISMISS_CONSENT, self._EXPAND_PROMOTIONS):
+            try:
+                await page.evaluate(script)
+            except Exception:
+                pass
+        try:
+            await page.wait_for_timeout(1_500)
+        except Exception:
+            pass
+
+    #: Declines non-essential cookies; its banner otherwise covers "View more".
+    _DISMISS_CONSENT = """() => {
+      const reject = document.querySelector('#onetrust-reject-all-handler')
+          || [...document.querySelectorAll('button')].find(
+               b => /reject all|decline|necessary only/i.test((b.textContent||'').trim()));
+      if (reject) { reject.click(); return true; }
+      return false;
+    }"""
+
+    _CLICK_VIEW_MORE = """() => {
+      const b = [...document.querySelectorAll('button')].find(
+          e => /view more/i.test((e.textContent||'').trim()));
+      if (!b) return false;
+      b.click();
+      return true;
+    }"""
+
+    async def _expand_listing(self, page) -> None:
+        """Pull the whole listing into the page before it is read.
+
+        Boots serves 48 products and resets the page size on every fresh load,
+        so the rest arrive only by pressing "View more", 24 at a time.
+        """
+        try:
+            await page.evaluate(self._DISMISS_CONSENT)
+        except Exception:
+            pass
+
+        for _ in range(self.MAX_VIEW_MORE_CLICKS):
+            try:
+                before = await page.locator(self.PRODUCT_CARD).count()
+                if not await page.evaluate(self._CLICK_VIEW_MORE):
+                    return
+                await page.wait_for_function(
+                    f"document.querySelectorAll({self.PRODUCT_CARD!r}).length > {before}",
+                    timeout=20_000,
+                )
+            except Exception:
+                return
+
+    def offer_page_count(self, response) -> int:
+        """Boots reads one listing in one request, however many products it holds."""
+        return 1
+
+    def wants_next_offer_page(self, response, page: int, found: int) -> bool:
+        """Never: `_expand_listing` has already pulled the whole listing in."""
+        return False
+
+    def extract_offer_products(self, response, brands: Sequence[str]) -> List[Dict[str, Any]]:
+        """Our brands' products on an offers listing, read from the grid."""
+        rows: Dict[str, Dict[str, Any]] = {}
+        for card in response.css(self.PRODUCT_CARD):
+            link = next((n.attrib.get("href") for n in card.css("a[href]")
+                         if self.product_id_from_url(n.attrib.get("href") or "")), None)
+            product_id = self.product_id_from_url(link or "")
+            if not product_id or product_id in rows:
+                continue
+
+            title = self._card_title(card)
+            brand = self.brand_from_title(title, brands)
+            if not brand:
+                continue
+
+            offer_text = self._card_offer(card)
+            if offer_text is None and self._page_brand(str(response.url)):
+                continue
+
+            current = self._card_price(card, ".oct-teaser__productPrice")
+            original = self._card_price(card, ".oct-teaser__productPriceWas--value")
+            saving = self._card_price(card, ".oct-teaser__productPriceSave")
+            if original is None and current is not None and saving is not None:
+                original = round(current + saving, 2)
+
+            rows[product_id] = {
+                "brand": brand,
+                "product_id": product_id,
+                "product_title": title,
+                "offer_text": offer_text,
+                "product_url": canonical_url(link),
+                "current_price": current,
+                "original_price": original,
+                "discount_amount": (round(original - current, 2)
+                                    if current is not None and original else None),
+                "discount_percent": percent_off(original, current),
+                "currency": "GBP",
+                "source_url": str(response.url),
+            }
+        return list(rows.values())
+
+    def _card_title(self, card) -> Optional[str]:
+        """The product name, without the decoration Boots prefixes it with."""
+        for selector in (".oct-teaser__title", "[class*='teaser__title']", "h3", "h2"):
+            node = card.css(selector)
+            if node:
+                text = clean_text(node[0].get_all_text())
+                if text:
+                    return re.sub(r"^(?:none|Offer)\s*", "", text).strip() or None
+        return None
+
+    @staticmethod
+    def _card_price(card, selector: str) -> Optional[float]:
+        """A money amount from one part of a card, or None."""
+        node = card.css(selector)
+        if not node:
+            return None
+        amount, _ = parse_price(clean_text(node[0].get_all_text()) or "")
+        return amount
+
+    #: Shortest a real Boots promotion runs. Deliberately low: the badges are
+    #: named below rather than guessed at by length.
+    _MIN_OFFER_CHARS = 8
+
+    #: The card's own buttons. Everything else in that slot is the promotion.
+    _CARD_UI_TEXT = re.compile(
+        r"^(?:add(?:\s+to\s+basket)?|yes|no|view\s+product"
+        r"|view\s+(?:colours|colors|shades|sizes)|find\s+in\s+store"
+        r"|quick\s+buy|out\s+of\s+stock|notify\s+me"
+        r"|offer|offers|new|sale|save)\s*$", re.I)
+
+    def _card_offer(self, card) -> Optional[str]:
+        """The promotion Boots prints on the card.
+
+        Boots renders it in the same button slot as "Add", so the buttons are
+        named and skipped rather than the text having to look like an offer:
+        real offers such as "Receive double Advantage Card points" carry no
+        price, percentage or the word save.
+        """
+        for node in card.css(".oct-button__content, [class*='promo'], [class*='Promotion']"):
+            text = clean_text(node.get_all_text())
+            # Boots labels a discounted card "Offer" and a multi-shade one
+            # "View colours" in the same slot. Its promotions are sentences.
+            if not text or not (self._MIN_OFFER_CHARS <= len(text) < 220):
+                continue
+            if self._CARD_UI_TEXT.match(text):
+                continue
+            return text
+        return None
+
+    def brand_from_title(self, title: Optional[str], brands: Sequence[str]) -> Optional[str]:
+        """Which requested brand a product title opens with."""
+        text = fold_accents(title or "").casefold()
+        for brand in sorted(brands, key=len, reverse=True):
+            value = self.brand_facet_value(brand) or brand
+            folded = fold_accents(value).casefold().replace(".", r"\.?")
+            if re.match(rf"{folded}(?![a-z0-9])", text):
+                return brand
+        return None
 
     def promotion_key(self, campaign) -> Optional[str]:
         """Boots' own name for an offer, read from its "shop now" link."""
@@ -199,6 +497,9 @@ class BootsAdapter(RetailerAdapter):
             timeout=20_000,
             max_pages=2,
             proxy=proxy,
+            # Narrower than this and Boots hides the filter panel, including the
+            # Promotions facet, behind a burger menu.
+            additional_args={"viewport": {"width": 1600, "height": 1000}},
         ))
 
     @staticmethod
@@ -473,7 +774,55 @@ class BootsAdapter(RetailerAdapter):
     def extract_campaigns(self, response) -> List[Campaign]:
         if self.looks_blocked(response):
             return []
-        return self.parse_campaigns(response, str(response.url))
+        return (self.parse_campaigns(response, str(response.url))
+                + self._listing_campaigns(response))
+
+    def _listing_campaigns(self, response) -> List[Campaign]:
+        """The promotions a listing states, from its cards and its Promotions facet.
+
+        On a brand's own listing the facet is authoritative for that brand, so
+        each offer is scoped to it even when the wording never names it.
+        """
+        url = str(response.url)
+        brand = self._page_brand(url)
+        found: List[Campaign] = []
+        seen: set = set()
+
+        # A card's text has to prove it is an offer; a row Boots itself files
+        # under "Promotions" already is one, so only its value labels are cut.
+        candidates = [(self._card_offer(card), True)
+                      for card in response.css(self.PRODUCT_CARD)]
+        candidates += [(clean_text(node.get_all_text()), False)
+                       for node in response.css(self._PROMOTION_FACET_ROWS)]
+
+        for text, must_look_like_offer in candidates:
+            text = self._facet_label(text)
+            if not text or text in seen:
+                continue
+            if self._NOT_A_PROMOTION.match(text) and not self._OFFER_SIGNAL.search(text):
+                continue
+            if must_look_like_offer and not looks_like_offer(text):
+                continue
+            seen.add(text)
+            found.append(
+                Campaign(
+                    retailer=self.display_name,
+                    promotion_text=text,
+                    promotion_type=classify_promotion(text),
+                    scope=SCOPE_BRAND if brand else SCOPE_PRODUCT,
+                    scope_value=brand,
+                    promo_code=extract_promo_code(text),
+                    source_url=url,
+                )
+            )
+        return found
+
+    @staticmethod
+    def _facet_label(text: Optional[str]) -> Optional[str]:
+        """A facet row without the product count Boots appends to it."""
+        if not text:
+            return None
+        return re.sub(r"\(\d[\d,]*\)\s*$", "", text).strip() or None
 
     def parse_campaigns(self, sel, url: str) -> List[Campaign]:
         """Collect the offers Boots lists against a page."""

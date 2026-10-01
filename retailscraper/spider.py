@@ -161,13 +161,15 @@ class RetailPromotionSpider(SitemapSpider):
         """Everything the crawl actually needs, once any warmup has happened."""
         if self.campaigns_only:
             for url in self.adapter.campaign_discovery_urls():
-                yield Request(url, callback=self.parse_campaign_directory)
+                yield Request(url, callback=self.parse_campaign_directory,
+                              **self.adapter.offer_request_kwargs())
             return
 
         seeds = list(self.adapter.campaign_seed_urls(self.brands))
         for url in self.adapter.campaign_discovery_urls():
             if url not in seeds:
-                yield Request(url, callback=self.parse_campaign_directory)
+                yield Request(url, callback=self.parse_campaign_directory,
+                              **self.adapter.offer_request_kwargs())
 
         for url in seeds:
             yield Request(url, callback=self.parse_campaign_page)
@@ -520,7 +522,8 @@ class RetailPromotionSpider(SitemapSpider):
             yield request
 
         for url in self.adapter.offer_page_links(response):
-            yield Request(url, callback=self.parse_campaign_directory)
+            yield Request(url, callback=self.parse_campaign_directory,
+                          **self.adapter.offer_request_kwargs())
 
     def _brand_offer_requests(self, offer_url: str, response=None) -> List[Any]:
         """Read an offer page's products for our brands, narrowed where we can."""
@@ -548,9 +551,11 @@ class RetailPromotionSpider(SitemapSpider):
                 return []
             nxt = self.adapter.brand_offer_url(str(response.url), self.brands, 2)
             return [Request(nxt, callback=self.parse_brand_offer,
-                            meta={"offer_url": page, "page": 2})] if nxt else []
+                            meta={"offer_url": page, "page": 2},
+                            **self.adapter.offer_request_kwargs())] if nxt else []
         return [Request(url, callback=self.parse_brand_offer,
-                        meta={"offer_url": page, "page": 1})]
+                        meta={"offer_url": page, "page": 1},
+                        **self.adapter.offer_request_kwargs())]
 
     def _collect_offer_products(self, response, offer_url: str, page: int) -> List[Dict[str, Any]]:
         """Keep this page's products for our brands, and say how many."""
@@ -580,7 +585,8 @@ class RetailPromotionSpider(SitemapSpider):
             nxt = self.adapter.brand_offer_url(str(response.url), self.brands, page + 1)
             if nxt:
                 yield Request(nxt, callback=self.parse_brand_offer,
-                              meta={**meta, "page": page + 1})
+                              meta={**meta, "page": page + 1},
+                              **self.adapter.offer_request_kwargs())
 
     async def parse_campaign_page(self, response) -> AsyncGenerator[Any, None]:
         """Collect promotions from a brand or category landing page."""
@@ -649,9 +655,24 @@ class RetailPromotionSpider(SitemapSpider):
             )
 
     def _record_campaign(self, campaign: Campaign) -> None:
-        """Store a campaign once, regardless of how many pages showed it."""
-        if campaign.campaign_id not in self.campaigns:
+        """Store a campaign once, keeping every page that showed it.
+
+        The same offer usually runs across several brand and category
+        listings. Only the first sighting used to be kept, which left the
+        stored URL describing one brand while the record claimed several.
+        """
+        seen = self.campaigns.get(campaign.campaign_id)
+        if seen is None:
             self.campaigns[campaign.campaign_id] = campaign
+            return
+        # Only where the offer is stated on the products themselves does a page
+        # belong to the campaign. A retailer that advertises offers as links
+        # repeats those links in its navigation, so every page crawled would
+        # otherwise be recorded as the campaign's own.
+        if not getattr(self.adapter, "campaigns_stated_on_product", False):
+            return
+        for url in campaign.source_urls or [campaign.source_url]:
+            seen.also_seen_at(url)
 
     def collapse_duplicate_campaigns(self) -> int:
         """Merge one promotion stated at two lengths into its fuller wording."""

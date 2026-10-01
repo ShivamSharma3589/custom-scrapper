@@ -44,12 +44,25 @@ class Campaign:
     campaign_id: str = ""
     record_type: str = "campaign"
 
+    #: Every page this campaign was seen on. One offer often runs across
+    #: several brand or category listings, and a single URL would describe
+    #: only the first of them.
+    source_urls: List[str] = field(default_factory=list)
+
     def __post_init__(self) -> None:
         from .normalize import strip_call_to_action
         self.promotion_text = strip_call_to_action(self.promotion_text)
 
         if not self.campaign_id:
             self.campaign_id = _stable_id(self.retailer, self.promotion_text)
+
+        if not self.source_urls and self.source_url:
+            self.source_urls = [self.source_url]
+
+    def also_seen_at(self, url: str) -> None:
+        """Record another page this same campaign appeared on."""
+        if url and url not in self.source_urls:
+            self.source_urls.append(url)
 
     def to_dict(self) -> Dict[str, Any]:
         return asdict(self)

@@ -11,6 +11,7 @@ from .models import Campaign, Product, RejectedRecord
 from .validation import match_brand
 
 OFFER_PRODUCT_COLUMNS = [
+    "retailer",
     "brand", "product_title", "product_id", "offer_text",
     "current_price", "original_price", "discount_amount", "discount_percent",
     "currency", "product_url", "campaign_ids",
@@ -29,7 +30,7 @@ PRODUCT_COLUMNS = [
 CAMPAIGN_COLUMNS = [
     "campaign_id", "retailer", "scope", "scope_value",
     "promotion_type", "promotion_text", "promo_code",
-    "landing_url", "source_url",
+    "landing_url", "source_urls",
 ]
 
 REJECTED_COLUMNS = ["reason", "detail", "source_url", "product_title", "product_id"]
@@ -187,6 +188,7 @@ def _write_filtered(payload, campaigns, shared, put_json, put_csv, adapter=None)
         seen = merged.get(row["product_id"])
         if seen is None:
             merged[row["product_id"]] = {
+                "retailer": payload.get("retailer"),
                 **row, "campaign_ids": set(ids),
                 # "offer_urls": {offer},
             }
@@ -212,7 +214,7 @@ def _write_filtered(payload, campaigns, shared, put_json, put_csv, adapter=None)
             cid = campaign.get("campaign_id")
             if not cid or cid in brands_by_campaign:
                 continue
-            ours = adapter.campaign_named_brands(campaign.get("promotion_text") or "", wanted)
+            ours = adapter.campaign_named_brands(campaign, wanted)
             if ours:
                 named[cid] = ours
 
@@ -223,7 +225,8 @@ def _write_filtered(payload, campaigns, shared, put_json, put_csv, adapter=None)
             or c.get("campaign_id") in named]
 
     put_json({**shared, "campaigns": kept}, "filtered_campaigns/campaigns")
-    put_csv([{**c, "brands": ";".join(c["brands"])} for c in kept],
+    put_csv([{**c, "brands": ";".join(c["brands"]),
+              "source_urls": ";".join(c.get("source_urls") or [])} for c in kept],
             CAMPAIGN_COLUMNS + ["brands"], "filtered_campaigns/campaigns")
 
     put_json({**shared, "products": rows}, "filtered_campaigns/products")
@@ -260,7 +263,8 @@ def write_all(payload: Dict[str, Any], paths, adapter=None,
 
     if campaigns_only:
         put_json({**shared, "campaigns": campaigns}, "campaigns")
-        put_csv(campaigns, CAMPAIGN_COLUMNS, "campaigns")
+        put_csv([{**c, "source_urls": ";".join(c.get("source_urls") or [])}
+                 for c in campaigns], CAMPAIGN_COLUMNS, "campaigns")
         for path in _write_filtered(payload, campaigns, shared, put_json, put_csv, adapter):
             written.append(path)
         put_csv(_flat_rejections(payload), REJECTED_COLUMNS, "rejected")
@@ -288,6 +292,7 @@ def write_all(payload: Dict[str, Any], paths, adapter=None,
         put_csv(rows, PRODUCT_COLUMNS, _brand_filename_part(brand))
 
     put_json({**shared, "campaigns": campaigns}, "campaigns")
-    put_csv(campaigns, CAMPAIGN_COLUMNS, "campaigns")
+    put_csv([{**c, "source_urls": ";".join(c.get("source_urls") or [])}
+             for c in campaigns], CAMPAIGN_COLUMNS, "campaigns")
     put_csv(_flat_rejections(payload), REJECTED_COLUMNS, "rejected")
     return written

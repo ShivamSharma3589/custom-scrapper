@@ -75,8 +75,6 @@ def _schemas():
             F("scraped_at", "TIMESTAMP"),
         ],
         CAMPAIGNS: [
-            F("run_id", "STRING", mode="REQUIRED"),
-            F("run_started_at", "TIMESTAMP", mode="REQUIRED"),
             F("retailer", "STRING", mode="REQUIRED"),
             F("campaign_id", "STRING", mode="REQUIRED"),
             F("promotion_text", "STRING"),
@@ -84,7 +82,9 @@ def _schemas():
             F("scope", "STRING"),
             F("promo_code", "STRING"),
             F("landing_url", "STRING"),
-            F("source_url", "STRING"),
+            F("source_urls", "STRING", mode="REPEATED"),
+            F("first_seen", "TIMESTAMP", mode="REQUIRED"),
+            F("last_seen", "TIMESTAMP", mode="REQUIRED"),
         ],
         PRODUCT_CAMPAIGNS: [
             F("run_id", "STRING", mode="REQUIRED"),
@@ -99,7 +99,7 @@ def _schemas():
 _PARTITION_FIELD = {
     RUNS: "started_at",
     PRODUCTS: "run_started_at",
-    CAMPAIGNS: "run_started_at",
+    CAMPAIGNS: "first_seen",
     PRODUCT_CAMPAIGNS: "run_started_at",
 }
 
@@ -151,11 +151,12 @@ def _product_rows(payload, run_id, started_at, retailer) -> List[Dict[str, Any]]
 
 
 def _campaign_rows(payload, run_id, started_at, retailer) -> List[Dict[str, Any]]:
+    """One row per campaign. A campaign already in BigQuery keeps its
+    `first_seen`; only `last_seen` moves forward, so the table says when an
+    offer appeared and when it was last still running."""
     rows = []
     for c in payload.get("campaigns") or []:
         rows.append({
-            "run_id": run_id,
-            "run_started_at": started_at,
             "retailer": retailer,
             "campaign_id": c.get("campaign_id"),
             "promotion_text": c.get("promotion_text"),
@@ -163,7 +164,10 @@ def _campaign_rows(payload, run_id, started_at, retailer) -> List[Dict[str, Any]
             "scope": c.get("scope"),
             "promo_code": c.get("promo_code"),
             "landing_url": c.get("landing_url"),
-            "source_url": c.get("source_url"),
+            "source_urls": c.get("source_urls") or (
+                [c["source_url"]] if c.get("source_url") else []),
+            "first_seen": started_at,
+            "last_seen": started_at,
         })
     return rows
 
@@ -221,6 +225,64 @@ def _load(client, bucket_name: str, blob_name: str, table_id: str) -> int:
     )
     job.result()
     return job.output_rows or 0
+
+
+#: Everything a re-sighting leaves alone: the two keys and `first_seen`.
+_CAMPAIGN_MERGE_FIELDS = [
+    "promotion_text", "promotion_type", "scope",
+    "promo_code", "landing_url",
+]
+
+
+def _merge_campaigns(client, bucket_name: str, blob_name: str, table_id: str) -> int:
+    """Upsert campaigns on (retailer, campaign_id).
+
+    A campaign seen before keeps its original `first_seen` and only has its
+    `last_seen` moved forward; one never seen before is inserted with both set
+    to this run. Staging the rows first keeps it one atomic MERGE rather than a
+    read-modify-write per campaign.
+    """
+    from google.cloud import bigquery as bq
+
+    staging_id = f"{table_id}_staging"
+    load = client.load_table_from_uri(
+        f"gs://{bucket_name}/{blob_name}",
+        staging_id,
+        job_config=bq.LoadJobConfig(
+            source_format=bq.SourceFormat.NEWLINE_DELIMITED_JSON,
+            schema=_schemas()[CAMPAIGNS],
+            write_disposition=bq.WriteDisposition.WRITE_TRUNCATE,
+        ),
+    )
+    load.result()
+
+    columns = ["retailer", "campaign_id", *_CAMPAIGN_MERGE_FIELDS,
+               "source_urls", "first_seen", "last_seen"]
+    picked = ", ".join(f"ANY_VALUE({f}) AS {f}" for f in _CAMPAIGN_MERGE_FIELDS)
+    # One run can see the same campaign on several pages, so the rows for it
+    # are flattened and de-duplicated before the MERGE sees them.
+    picked += (", ARRAY(SELECT DISTINCT u FROM UNNEST("
+               "ARRAY_CONCAT_AGG(source_urls)) AS u) AS source_urls")
+    values = ", ".join(f"source.{c}" for c in columns)
+    try:
+        merge = client.query(
+            f"MERGE `{table_id}` AS target "
+            f"USING (SELECT retailer, campaign_id, {picked}, "
+            f"MIN(first_seen) AS first_seen, MAX(last_seen) AS last_seen "
+            f"FROM `{staging_id}` WHERE campaign_id IS NOT NULL "
+            f"GROUP BY retailer, campaign_id) AS source "
+            f"ON target.retailer = source.retailer "
+            f"AND target.campaign_id = source.campaign_id "
+            f"WHEN MATCHED THEN UPDATE SET "
+            f"last_seen = GREATEST(target.last_seen, source.last_seen), "
+            f"source_urls = ARRAY(SELECT DISTINCT u FROM UNNEST("
+            f"ARRAY_CONCAT(target.source_urls, source.source_urls)) AS u) "
+            f"WHEN NOT MATCHED THEN INSERT ({', '.join(columns)}) VALUES ({values})"
+        )
+        merge.result()
+        return merge.num_dml_affected_rows or 0
+    finally:
+        client.delete_table(staging_id, not_found_ok=True)
 
 
 def publish(payload: Dict[str, Any], manifest: Dict[str, Any],
@@ -310,20 +372,28 @@ def _publish(payload: Dict[str, Any], manifest: Dict[str, Any],
     for name, rows in batches.items():
         if not rows:
             continue
-        try:
-            if _already_loaded(client, tables[name], run_id):
-                skipped.append(name)
+        # Campaigns are upserted, so re-running is the point; the others are
+        # append-only and must not load the same run twice.
+        if name != CAMPAIGNS:
+            try:
+                if _already_loaded(client, tables[name], run_id):
+                    skipped.append(name)
+                    continue
+            except Exception as exc:
+                warnings.append(
+                    f"could not check whether {run_id} is already in {name} ({exc})")
                 continue
-        except Exception as exc:
-            warnings.append(f"could not check whether {run_id} is already in {name} ({exc})")
-            continue
 
         blob_name = f"{run_folder}/bigquery/{stamp}.{name}.ndjson"
         body = "\n".join(json.dumps(r, ensure_ascii=False, default=str) for r in rows)
         try:
             bucket.blob(blob_name).upload_from_string(body, content_type="application/json")
-            loaded = _load(client, GCS_BUCKET, blob_name, tables[name])
-            log.info("loaded %d row(s) into %s", loaded, name)
+            if name == CAMPAIGNS:
+                loaded = _merge_campaigns(client, GCS_BUCKET, blob_name, tables[name])
+                log.info("merged %d campaign row(s) into %s", loaded, name)
+            else:
+                loaded = _load(client, GCS_BUCKET, blob_name, tables[name])
+                log.info("loaded %d row(s) into %s", loaded, name)
         except Exception as exc:
             warnings.append(f"could not load {name} into BigQuery ({exc})")
 

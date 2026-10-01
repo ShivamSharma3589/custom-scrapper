@@ -170,6 +170,10 @@ class RetailerAdapter(ABC):
         """Ids of the products an offers page lists as being in its offer."""
         return []
 
+    def offer_request_kwargs(self) -> Dict[str, object]:
+        """Extra fetch options for an offers listing, e.g. in-page automation."""
+        return {}
+
     def offer_page_key(self, url: str) -> str:
         """One key for every URL spelling of the same offers listing."""
         return url.split("?")[0].rstrip("/")
@@ -214,11 +218,19 @@ class RetailerAdapter(ABC):
         """Whether to ask for the page after this one"""
         return bool(found) and page < self.offer_page_count(response)
 
-    def campaign_named_brands(self, promotion_text: str, wanted: Sequence[str]) -> List[str]:
-        """Which of `wanted` an offer's own wording names."""
+    def campaign_named_brands(self, campaign, wanted: Sequence[str]) -> List[str]:
+        """Which of `wanted` an offer belongs to, by its scope or its wording."""
         from ..normalize import fold_accents
+        from ..validation import match_brand
 
-        text = fold_accents(promotion_text or "")
+        scoped = campaign.get("scope_value") if isinstance(campaign, dict) else None
+        if scoped:
+            ours = [w for w in wanted if match_brand(scoped, [w])]
+            if ours:
+                return ours
+
+        text = campaign.get("promotion_text") if isinstance(campaign, dict) else campaign
+        text = fold_accents(text or "")
         return [w for w in wanted if _names(text, fold_accents(w))]
 
     def campaign_brands(self, campaign, wanted: Sequence[str]) -> Optional[List[str]]:
