@@ -76,9 +76,6 @@ class BootsAdapter(RetailerAdapter):
 
     CAMPAIGN_HUB_PATHS = ["/offers"]
 
-    #: Each brand's own "shop all" listing. Its Promotions facet is Boots's
-    #: complete list of offers on that brand, including ones no offers page
-    #: features. Verified against the live site one brand at a time.
     BRAND_CAMPAIGN_PAGES = {
         "clinique": "/clinique/clinique-full-range",
         "mac": "/mac/mac-shop-all",
@@ -90,8 +87,6 @@ class BootsAdapter(RetailerAdapter):
         "jo malone london": "/jo-malone-london",
     }
 
-    #: The Promotions facet's own rows. Boots files its offers here, so these
-    #: are taken as offers without having to look like one.
     _PROMOTION_FACET_ROWS = (
         "[data-testid*='promotion'] li.facet__child, "
         "[id*='promotion'] li.facet__child, "
@@ -136,9 +131,6 @@ class BootsAdapter(RetailerAdapter):
 
     PRODUCT_CARD = ".oct-teaser--theme-productTile"
 
-    #: "View more" adds 24 at a time; the cap stops a runaway listing.
-    #: Parked: each click roughly doubles as the grid grows, so one listing cost
-    #: 40 minutes to reach 528 of 537. Set True to re-enable `_expand_listing`.
     EXPAND_LISTING = False
     MAX_VIEW_MORE_CLICKS = 60
 

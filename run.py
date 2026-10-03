@@ -460,7 +460,7 @@ def main(argv=None) -> int:
         for path in written:
             print(f"      {path}")
 
-        for warning in publish(payload, manifest, written, paths.root.name):
+        for warning in publish(payload, manifest, written, paths.root.name, adapter):
             logging.getLogger(__name__).warning(warning)
             print(f"warning: {warning}", file=sys.stderr)
 

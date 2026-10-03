@@ -12,8 +12,8 @@ from pathlib import Path
 
 # Uncomment the shops to scrape
 RETAILERS = [
-    # "lookfantastic",
-    "johnlewis",
+    "lookfantastic",
+    # "johnlewis",
     # "boots",
     # "allbeauty",
     # "marksandspencer",

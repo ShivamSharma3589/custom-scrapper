@@ -154,8 +154,8 @@ def _as_campaign(row: Dict[str, Any]):
     )
 
 
-def _write_filtered(payload, campaigns, shared, put_json, put_csv, adapter=None) -> List[Path]:
-    """The client-facing set: campaigns proven to carry our brands, and those products"""
+def build_filtered(payload, campaigns, adapter=None):
+    """The client-facing set: (campaigns proven to carry our brands, their products)."""
     offers = payload.get("offer_products") or []
     by_offer_text = bool(adapter is not None
                          and getattr(adapter, "campaigns_stated_on_product", False))
@@ -223,6 +223,13 @@ def _write_filtered(payload, campaigns, shared, put_json, put_csv, adapter=None)
             for c in campaigns
             if c.get("campaign_id") in brands_by_campaign
             or c.get("campaign_id") in named]
+
+    return kept, rows
+
+
+def _write_filtered(payload, campaigns, shared, put_json, put_csv, adapter=None) -> List[Path]:
+    """Write the client-facing campaigns and products."""
+    kept, rows = build_filtered(payload, campaigns, adapter)
 
     put_json({**shared, "campaigns": kept}, "filtered_campaigns/campaigns")
     put_csv([{**c, "brands": ";".join(c["brands"]),

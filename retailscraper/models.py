@@ -43,10 +43,6 @@ class Campaign:
     landing_url: Optional[str] = None
     campaign_id: str = ""
     record_type: str = "campaign"
-
-    #: Every page this campaign was seen on. One offer often runs across
-    #: several brand or category listings, and a single URL would describe
-    #: only the first of them.
     source_urls: List[str] = field(default_factory=list)
 
     def __post_init__(self) -> None:

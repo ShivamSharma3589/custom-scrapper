@@ -665,10 +665,7 @@ class RetailPromotionSpider(SitemapSpider):
         if seen is None:
             self.campaigns[campaign.campaign_id] = campaign
             return
-        # Only where the offer is stated on the products themselves does a page
-        # belong to the campaign. A retailer that advertises offers as links
-        # repeats those links in its navigation, so every page crawled would
-        # otherwise be recorded as the campaign's own.
+
         if not getattr(self.adapter, "campaigns_stated_on_product", False):
             return
         for url in campaign.source_urls or [campaign.source_url]:
