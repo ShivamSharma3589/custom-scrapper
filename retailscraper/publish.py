@@ -213,13 +213,44 @@ def _drop_invalid(name: str, rows: List[Dict[str, Any]]) -> Tuple[List[Dict[str,
     return kept, len(rows) - len(kept)
 
 
-def _already_loaded(client, table_id: str, run_id: str) -> bool:
+def _dataset_name() -> str:
+    """BQ_DATASET as a bare dataset name.
+
+    A dataset is often written with its project attached, as
+    `project.dataset` or the legacy `project:dataset`. Pasting either into
+    BQ_DATASET used to build a four-part table id, which BigQuery rejects with
+    "ProjectId must be non-empty", so only the last segment is kept.
+    """
+    return BQ_DATASET.replace(":", ".").rstrip(".").split(".")[-1].strip()
+
+
+def _table_ref(name: str):
+    """A typed reference to one of our tables, so a malformed id cannot reach SQL."""
+    from google.cloud import bigquery as bq
+
+    return bq.DatasetReference(GCP_PROJECT, _dataset_name()).table(name)
+
+
+def _table_id(name: str) -> str:
+    """The backticked form, for the one statement that has to be text."""
+    return f"{GCP_PROJECT}.{_dataset_name()}.{name}"
+
+
+def _already_loaded(client, name: str, run_id: str) -> bool:
+    """Whether this run is already in an append-only table.
+
+    The table is named by a reference rather than interpolated into the SQL:
+    the project and dataset then come from the client's own objects instead of
+    a string that may be missing a part.
+    """
     from google.cloud import bigquery as bq
 
     job = client.query(
-        f"SELECT COUNT(*) AS n FROM `{table_id}` WHERE run_id = @run_id",
-        job_config=bq.QueryJobConfig(query_parameters=[
-            bq.ScalarQueryParameter("run_id", "STRING", run_id)]),
+        f"SELECT COUNT(*) AS n FROM `{name}` WHERE run_id = @run_id",
+        job_config=bq.QueryJobConfig(
+            default_dataset=bq.DatasetReference(GCP_PROJECT, _dataset_name()),
+            query_parameters=[bq.ScalarQueryParameter("run_id", "STRING", run_id)],
+        ),
     )
     return next(iter(job.result())).n > 0
 
@@ -254,14 +285,16 @@ def _load(client, bucket_name: str, blob_name: str, table_id: str) -> int:
     return job.output_rows or 0
 
 
-def _merge_products(client, bucket_name: str, blob_name: str, table_id: str) -> int:
+def _merge_products(client, bucket_name: str, blob_name: str, table) -> int:
     """Upsert products on (retailer, product_id)."""
     from google.cloud import bigquery as bq
 
-    staging_id = f"{table_id}_staging_{uuid.uuid4().hex[:8]}"
+    table_id = _table_id(PRODUCTS)
+    staging = _table_ref(f"{PRODUCTS}_staging_{uuid.uuid4().hex[:8]}")
+    staging_id = f"{GCP_PROJECT}.{_dataset_name()}.{staging.table_id}"
     load = client.load_table_from_uri(
         f"gs://{bucket_name}/{blob_name}",
-        staging_id,
+        staging,
         job_config=bq.LoadJobConfig(
             source_format=bq.SourceFormat.NEWLINE_DELIMITED_JSON,
             schema=_schemas()[PRODUCTS],
@@ -295,7 +328,7 @@ def _merge_products(client, bucket_name: str, blob_name: str, table_id: str) -> 
         merge.result()
         return merge.num_dml_affected_rows or 0
     finally:
-        client.delete_table(staging_id, not_found_ok=True)
+        client.delete_table(staging, not_found_ok=True)
 
 
 def publish(payload: Dict[str, Any], manifest: Dict[str, Any],
@@ -362,8 +395,13 @@ def _publish(payload: Dict[str, Any], manifest: Dict[str, Any],
 
     log.info("uploaded %d file(s) to gs://%s/%s/", len(uploaded), GCS_BUCKET, run_folder)
 
-    tables = {name: f"{GCP_PROJECT}.{BQ_DATASET}.{name}"
-              for name in (RUNS, PRODUCTS, CAMPAIGNS, MAPPING)}
+    if _dataset_name() != BQ_DATASET.strip():
+        warnings.append(
+            f"BQ_DATASET is {BQ_DATASET!r}; reading it as dataset "
+            f"{_dataset_name()!r} in project {GCP_PROJECT!r}")
+    tables = {name: _table_ref(name) for name in (RUNS, PRODUCTS, CAMPAIGNS, MAPPING)}
+    log.info("BigQuery target: %s.%s (%s)", GCP_PROJECT, _dataset_name(),
+             ", ".join(sorted(tables)))
 
     # A failed run still gets its runs row, so the morning check shows it.
     batches = {RUNS: [_run_row(manifest)]}
@@ -391,12 +429,13 @@ def _publish(payload: Dict[str, Any], manifest: Dict[str, Any],
         # carry a run_id must not take the same run twice.
         if name in _APPEND_ONLY:
             try:
-                if _already_loaded(client, tables[name], run_id):
+                if _already_loaded(client, name, run_id):
                     skipped.append(name)
                     continue
             except Exception as exc:
                 warnings.append(
-                    f"could not check whether {run_id} is already in {name} ({exc})")
+                    f"could not check whether {run_id} is already in "
+                    f"{GCP_PROJECT}.{_dataset_name()}.{name} ({exc})")
                 continue
 
         blob_name = f"{run_folder}/bigquery/{run_id}.{name}.ndjson"
