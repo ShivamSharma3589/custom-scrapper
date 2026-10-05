@@ -70,10 +70,8 @@ def _schemas():
             F("scraped_at", "TIMESTAMP", mode="REQUIRED"),
         ],
         CAMPAIGNS: [
-            F("first_seen", "TIMESTAMP", mode="REQUIRED"),
-            F("brand", "STRING"),
-            F("last_seen", "TIMESTAMP", mode="REQUIRED"),
             F("retailer", "STRING", mode="REQUIRED"),
+            F("brand", "STRING", mode="REQUIRED"),
             F("campaign_id", "STRING", mode="REQUIRED"),
             F("promotion_text", "STRING", mode="REQUIRED"),
             F("promotion_type", "STRING", mode="REQUIRED"),
@@ -114,8 +112,8 @@ _PRODUCT_FIELDS = [
 _REQUIRED = {
     RUNS: ["run_id", "retailer", "started_at"],
     PRODUCTS: ["retailer", "product_id", "first_seen", "last_seen", "scraped_at"],
-    CAMPAIGNS: ["retailer", "campaign_id", "promotion_text", "promotion_type",
-                "first_seen", "last_seen"],
+    CAMPAIGNS: ["retailer", "brand", "campaign_id",
+                "promotion_text", "promotion_type"],
     MAPPING: ["run_id", "run_at", "product_id", "campaign_id"],
 }
 
@@ -169,8 +167,6 @@ def _campaign_rows(campaigns, started_at, retailer) -> List[Dict[str, Any]]:
     for c in campaigns:
         urls = c.get("source_urls") or ([c["source_url"]] if c.get("source_url") else [])
         base = {
-            "first_seen": started_at,
-            "last_seen": started_at,
             "retailer": c.get("retailer") or retailer,
             "campaign_id": c.get("campaign_id"),
             "promotion_text": c.get("promotion_text"),
