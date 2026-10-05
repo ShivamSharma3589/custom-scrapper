@@ -67,6 +67,7 @@ def _schemas():
             F("price_is_from", "BOOL"),
             F("currency", "STRING"),
             F("variant_count", "STRING"),
+            F("product_offer", "STRING"),
             F("scraped_at", "TIMESTAMP", mode="REQUIRED"),
         ],
         CAMPAIGNS: [
@@ -105,6 +106,7 @@ _PRODUCT_FIELDS = [
     "price_is_from",
     "currency",
     "variant_count",
+    "product_offer",
     "scraped_at",
 ]
 
@@ -156,18 +158,63 @@ def _product_rows(products, started_at, retailer) -> List[Dict[str, Any]]:
             "price_is_from": p.get("price_is_from"),
             "currency": p.get("currency"),
             "variant_count": _text(p.get("variant_count")),
+            "product_offer": (p.get("product_offer") or p.get("offer_text")
+                              or p.get("promotional_copy")),
             "scraped_at": p.get("scraped_at") or started_at,
         })
     return rows
 
+#: Query them back with UNNEST(SPLIT(brand, ',')).
+BRAND_SEPARATOR = ","
+
+
+def _narrowness(url: str):
+    """How far a listing has been filtered down: fewer is broader."""
+    path = url.split("?")[0]
+    head, _, facets = path.partition("/_/")
+    return (len([s for s in head.split("/") if s]), facets.count("Z"), len(path))
+
+
+def _widest_url(urls: Sequence[str]) -> Optional[str]:
+    """One page that covers every brand the campaign row names, or None if no URL is known"""
+    if not urls:
+        return None
+    if len(urls) == 1:
+        return urls[0]
+
+    origins, heads, codes = set(), [], []
+    for url in urls:
+        head, sep, facets = url.split("?")[0].partition("/_/")
+        if not sep or "//" not in head:
+            return min(urls, key=_narrowness)
+        origin, _, path = head.partition("//")[2].partition("/")
+        origins.add(head.partition("//")[0] + "//" + origin)
+        heads.append([s for s in path.split("/") if s])
+        codes.append(facets.split("Z"))
+
+    shared: List[str] = []
+    for parts in zip(*heads):
+        if len(set(parts)) != 1:
+            break
+        shared.append(parts[0])
+
+    # Every listing under one category opens with that category's own code.
+    root = codes[0][0] if len({c[0] for c in codes}) == 1 else None
+    if len(origins) != 1 or not root or not shared:
+        return min(urls, key=_narrowness)
+
+    parent = f"{origins.pop()}/{'/'.join(shared)}/_/N-{root.removeprefix('N-')}"
+    return min([parent, *urls], key=_narrowness)
+
 
 def _campaign_rows(campaigns, started_at, retailer) -> List[Dict[str, Any]]:
-    """One row per campaign, per brand it applies to"""
+    """One row per campaign, with every brand it applies to in `brand`"""
     rows = []
     for c in campaigns:
         urls = c.get("source_urls") or ([c["source_url"]] if c.get("source_url") else [])
-        base = {
+        rows.append({
             "retailer": c.get("retailer") or retailer,
+            "brand": BRAND_SEPARATOR.join(c.get("brands") or []) or None,
             "campaign_id": c.get("campaign_id"),
             "promotion_text": c.get("promotion_text"),
             "promotion_type": c.get("promotion_type"),
@@ -175,10 +222,8 @@ def _campaign_rows(campaigns, started_at, retailer) -> List[Dict[str, Any]]:
             "scope_value": c.get("scope_value"),
             "promo_code": c.get("promo_code"),
             "landing_url": c.get("landing_url"),
-            "source_url": urls[0] if urls else None,
-        }
-        for brand in (c.get("brands") or [None]):
-            rows.append({**base, "brand": brand})
+            "source_url": _widest_url(urls),
+        })
     return rows
 
 
