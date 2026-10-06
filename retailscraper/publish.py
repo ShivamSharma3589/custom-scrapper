@@ -110,13 +110,26 @@ _PRODUCT_FIELDS = [
     "scraped_at",
 ]
 
+_CAMPAIGN_KEYS = ["retailer", "campaign_id"]
+
+_CAMPAIGN_FIELDS = [
+    "brand",
+    "promotion_text",
+    "promotion_type",
+    "scope",
+    "scope_value",
+    "promo_code",
+    "landing_url",
+    "source_url",
+]
+
 #: A row missing any of these would be rejected by a NOT NULL column.
 _REQUIRED = {
     RUNS: ["run_id", "retailer", "started_at"],
     PRODUCTS: ["retailer", "product_id", "first_seen", "last_seen", "scraped_at"],
     CAMPAIGNS: ["retailer", "brand", "campaign_id",
                 "promotion_text", "promotion_type"],
-    MAPPING: ["run_id", "run_at", "product_id", "campaign_id"],
+    MAPPING: ["run_id", "run_at", "campaign_id"],
 }
 
 
@@ -227,19 +240,32 @@ def _campaign_rows(campaigns, started_at, retailer) -> List[Dict[str, Any]]:
     return rows
 
 
-def _mapping_rows(products, run_id, started_at) -> List[Dict[str, Any]]:
+def _mapping_rows(products, campaigns, run_id, started_at) -> List[Dict[str, Any]]:
+    """Which products each campaign covered on this run"""
     rows = []
     seen = set()
+    mapped = set()
     for p in products:
         for campaign_id in p.get("campaign_ids") or p.get("applied_campaigns") or []:
             key = (p.get("product_id"), campaign_id)
             if key in seen:
                 continue
             seen.add(key)
+            mapped.add(campaign_id)
             rows.append({
                 "run_id": run_id,
                 "run_at": started_at,
                 "product_id": p.get("product_id"),
+                "campaign_id": campaign_id,
+            })
+
+    for c in campaigns:
+        campaign_id = c.get("campaign_id")
+        if campaign_id and campaign_id not in mapped:
+            rows.append({
+                "run_id": run_id,
+                "run_at": started_at,
+                "product_id": None,
                 "campaign_id": campaign_id,
             })
     return rows
@@ -326,42 +352,53 @@ def _load(client, bucket_name: str, blob_name: str, table_id: str) -> int:
     return job.output_rows or 0
 
 
-def _merge_products(client, bucket_name: str, blob_name: str, table) -> int:
-    """Upsert products on (retailer, product_id)."""
+#: What each upserted table matches on, and what a later run overwrites.
+_UPSERT = {
+    PRODUCTS: (_PRODUCT_KEYS, _PRODUCT_FIELDS, True),
+    CAMPAIGNS: (_CAMPAIGN_KEYS, _CAMPAIGN_FIELDS, False),
+}
+
+
+def _merge(client, bucket_name: str, blob_name: str, name: str) -> int:
+    """Upsert one table's rows on its own key"""
     from google.cloud import bigquery as bq
 
-    table_id = _table_id(PRODUCTS)
-    staging = _table_ref(f"{PRODUCTS}_staging_{uuid.uuid4().hex[:8]}")
+    keys, fields, track_seen = _UPSERT[name]
+    table_id = _table_id(name)
+    staging = _table_ref(f"{name}_staging_{uuid.uuid4().hex[:8]}")
     staging_id = f"{GCP_PROJECT}.{_dataset_name()}.{staging.table_id}"
     load = client.load_table_from_uri(
         f"gs://{bucket_name}/{blob_name}",
         staging,
         job_config=bq.LoadJobConfig(
             source_format=bq.SourceFormat.NEWLINE_DELIMITED_JSON,
-            schema=_schemas()[PRODUCTS],
+            schema=_schemas()[name],
             write_disposition=bq.WriteDisposition.WRITE_TRUNCATE,
         ),
     )
     load.result()
 
-    columns = [*_PRODUCT_KEYS, *_PRODUCT_FIELDS, "first_seen", "last_seen"]
-    keys = ", ".join(_PRODUCT_KEYS)
-    # One run can see a product on several pages, so the staged rows are
-    # collapsed to one per product before the MERGE sees them.
-    picked = ", ".join(f"ANY_VALUE({f}) AS {f}" for f in _PRODUCT_FIELDS)
-    picked += ", MIN(first_seen) AS first_seen, MAX(last_seen) AS last_seen"
-    not_null = " AND ".join(f"{k} IS NOT NULL" for k in _PRODUCT_KEYS)
-    on = " AND ".join(f"target.{k} = source.{k}" for k in _PRODUCT_KEYS)
-    updates = [f"{f} = source.{f}" for f in _PRODUCT_FIELDS]
-    updates.append("last_seen = GREATEST(target.last_seen, source.last_seen)")
+    seen_cols = ["first_seen", "last_seen"] if track_seen else []
+    columns = [*keys, *fields, *seen_cols]
+    key_list = ", ".join(keys)
+    # One run can see the same key on several pages, so the staged rows are
+    # collapsed to one per key before the MERGE sees them.
+    picked = ", ".join(f"ANY_VALUE({f}) AS {f}" for f in fields)
+    if track_seen:
+        picked += ", MIN(first_seen) AS first_seen, MAX(last_seen) AS last_seen"
+    not_null = " AND ".join(f"{k} IS NOT NULL" for k in keys)
+    on = " AND ".join(f"target.{k} = source.{k}" for k in keys)
+    updates = [f"{f} = source.{f}" for f in fields]
+    if track_seen:
+        updates.append("last_seen = GREATEST(target.last_seen, source.last_seen)")
     values = ", ".join(f"source.{c}" for c in columns)
 
     try:
         merge = client.query(
             f"MERGE `{table_id}` AS target "
-            f"USING (SELECT {keys}, {picked} "
+            f"USING (SELECT {key_list}, {picked} "
             f"FROM `{staging_id}` WHERE {not_null} "
-            f"GROUP BY {keys}) AS source "
+            f"GROUP BY {key_list}) AS source "
             f"ON {on} "
             f"WHEN MATCHED THEN UPDATE SET {', '.join(updates)} "
             f"WHEN NOT MATCHED THEN INSERT ({', '.join(columns)}) VALUES ({values})"
@@ -448,9 +485,11 @@ def _publish(payload: Dict[str, Any], manifest: Dict[str, Any],
     batches = {RUNS: [_run_row(manifest)]}
     if status == "ok":
         campaigns, products = _client_facing(payload, adapter)
+        batches[RUNS] = [{**batches[RUNS][0], "campaigns": len(campaigns),
+                          "products": len(products)}]
         batches[PRODUCTS] = _product_rows(products, started_at, retailer)
         batches[CAMPAIGNS] = _campaign_rows(campaigns, started_at, retailer)
-        batches[MAPPING] = _mapping_rows(products, run_id, started_at)
+        batches[MAPPING] = _mapping_rows(products, campaigns, run_id, started_at)
     else:
         warnings.append(f"run status is {status!r}, so only the runs row was loaded")
 
@@ -466,8 +505,8 @@ def _publish(payload: Dict[str, Any], manifest: Dict[str, Any],
         if not rows:
             continue
 
-        # Products are upserted, so re-running is the point. The tables that
-        # carry a run_id must not take the same run twice.
+        # Products and campaigns are upserted, so re-running is the point. The
+        # tables that carry a run_id must not take the same run twice.
         if name in _APPEND_ONLY:
             try:
                 if _already_loaded(client, name, run_id):
@@ -483,9 +522,9 @@ def _publish(payload: Dict[str, Any], manifest: Dict[str, Any],
         body = "\n".join(json.dumps(r, ensure_ascii=False, default=str) for r in rows)
         try:
             bucket.blob(blob_name).upload_from_string(body, content_type="application/json")
-            if name == PRODUCTS:
-                loaded = _merge_products(client, GCS_BUCKET, blob_name, tables[name])
-                log.info("upserted %d product row(s)", loaded)
+            if name in _UPSERT:
+                loaded = _merge(client, GCS_BUCKET, blob_name, name)
+                log.info("upserted %d row(s) into %s", loaded, name)
             else:
                 loaded = _load(client, GCS_BUCKET, blob_name, tables[name])
                 log.info("loaded %d row(s) into %s", loaded, name)

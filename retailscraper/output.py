@@ -66,6 +66,8 @@ def build_payload(
         "run_stats": {
             **stats,
             "campaign_records": len(campaign_list),
+            "filtered_campaigns": None,
+            "filtered_products": None,
             "product_records": len(product_list),
             "rejected_records": len(rejected_list),
             "rejections_by_reason": _count_by_reason(rejected_list),
@@ -230,6 +232,9 @@ def build_filtered(payload, campaigns, adapter=None):
 def _write_filtered(payload, campaigns, shared, put_json, put_csv, adapter=None) -> List[Path]:
     """Write the client-facing campaigns and products."""
     kept, rows = build_filtered(payload, campaigns, adapter)
+    stats = {**(shared.get("run_stats") or {}),
+             "filtered_campaigns": len(kept), "filtered_products": len(rows)}
+    shared = {**shared, "run_stats": stats}
 
     put_json({**shared, "campaigns": kept}, "filtered_campaigns/campaigns")
     put_csv([{**c, "brands": ";".join(c["brands"]),
