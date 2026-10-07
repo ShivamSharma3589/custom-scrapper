@@ -170,6 +170,11 @@ class RetailerAdapter(ABC):
         """Ids of the products an offers page lists as being in its offer."""
         return []
 
+    def extra_offer_requests(self, response: "Response",
+                             brands: Sequence[str]) -> List[str]:
+        """Further listings to read before this offer page is done with"""
+        return []
+
     def offer_request_kwargs(self) -> Dict[str, object]:
         """Extra fetch options for an offers listing, e.g. in-page automation."""
         return {}

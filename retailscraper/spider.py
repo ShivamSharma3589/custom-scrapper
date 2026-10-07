@@ -581,6 +581,15 @@ class RetailPromotionSpider(SitemapSpider):
 
         rows = self._collect_offer_products(response, offer_url, page)
 
+        for url in self.adapter.extra_offer_requests(response, self.brands):
+            key = self.adapter.offer_page_key(url)
+            if key in self._brand_offer_seen:
+                continue
+            self._brand_offer_seen.add(key)
+            yield Request(url, callback=self.parse_brand_offer,
+                          meta={"offer_url": offer_url, "page": 1},
+                          **self.adapter.offer_request_kwargs())
+
         if self.adapter.wants_next_offer_page(response, page, len(rows)):
             nxt = self.adapter.brand_offer_url(str(response.url), self.brands, page + 1)
             if nxt:

@@ -375,6 +375,7 @@ class BootsAdapter(RetailerAdapter):
     def extract_offer_products(self, response, brands: Sequence[str]) -> List[Dict[str, Any]]:
         """Our brands' products on an offers listing, read from the grid."""
         rows: Dict[str, Dict[str, Any]] = {}
+        filtered = self._url_promotion(str(response.url))
         for card in response.css(self.PRODUCT_CARD):
             link = next((n.attrib.get("href") for n in card.css("a[href]")
                          if self.product_id_from_url(n.attrib.get("href") or "")), None)
@@ -388,7 +389,9 @@ class BootsAdapter(RetailerAdapter):
                 continue
 
             offer_text = self._card_offer(card)
-            if offer_text is None and self._page_brand(str(response.url)):
+            # On a promotion-filtered listing every product shown is in that
+            stated = [t for t in (filtered, offer_text) if t]
+            if not stated and self._page_brand(str(response.url)):
                 continue
 
             current = self._card_price(card, ".oct-teaser__productPrice")
@@ -401,7 +404,8 @@ class BootsAdapter(RetailerAdapter):
                 "brand": brand,
                 "product_id": product_id,
                 "product_title": title,
-                "offer_text": offer_text,
+                "offer_text": stated[0] if stated else None,
+                "offer_texts": list(dict.fromkeys(stated)),
                 "product_url": canonical_url(link),
                 "current_price": current,
                 "original_price": original,
@@ -442,6 +446,39 @@ class BootsAdapter(RetailerAdapter):
         r"|view\s+(?:colours|colors|shades|sizes)|find\s+in\s+store"
         r"|quick\s+buy|out\s+of\s+stock|notify\s+me"
         r"|offer|offers|new|sale|save)\s*$", re.I)
+
+    PROMOTION_FACET = "criteria.promotionalText"
+
+    #: Listings to read per offer page, so one page cannot fan out unbounded.
+    MAX_PROMOTION_PAGES = 12
+
+    def extra_offer_requests(self, response, brands: Sequence[str]) -> List[str]:
+        """One listing per promotion this page offers"""
+        url = str(response.url)
+        if self.PROMOTION_FACET in url:
+            return []
+
+        base, _, query = url.partition("?")
+        keep = "&".join(p for p in query.split("&")
+                        if p and not p.startswith(self.PROMOTION_FACET))
+        wanted = []
+        for node in response.css(self._PROMOTION_FACET_ROWS):
+            text = self._facet_label(clean_text(node.get_all_text()))
+            if not text or self._NOT_A_PROMOTION.match(text) and not self._OFFER_SIGNAL.search(text):
+                continue
+            if text not in wanted:
+                wanted.append(text)
+
+        out = []
+        for text in wanted[:self.MAX_PROMOTION_PAGES]:
+            parts = [p for p in (keep, f"{self.PROMOTION_FACET}={quote_plus(text)}") if p]
+            out.append(f"{base}?{'&'.join(parts)}")
+        return out
+
+    def _url_promotion(self, url: str) -> Optional[str]:
+        """The promotion a listing has been filtered to, if any."""
+        value = parse_qs(urlparse(url).query).get(self.PROMOTION_FACET)
+        return clean_text(value[0]) if value else None
 
     def _card_offer(self, card) -> Optional[str]:
         """The promotion Boots prints on the card.
