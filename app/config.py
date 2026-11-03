@@ -1,11 +1,13 @@
-"""Settings read from the .env file beside this one."""
+"""Settings read from the .env file at the repository root."""
 
 import os
 from pathlib import Path
 
 from dotenv import load_dotenv
 
-load_dotenv(Path(__file__).resolve().parent / ".env")
+load_dotenv(Path(__file__).resolve().parent.parent / ".env")
+
+RETAILERS = [r.strip().casefold() for r in os.getenv("RETAILERS", "").split(",") if r.strip()]
 
 PROXY_USERNAME = os.getenv("WEBSHARE_USERNAME", "")
 PROXY_PASSWORD = os.getenv("WEBSHARE_PASSWORD", "")
@@ -40,13 +42,11 @@ def first_proxy():
     raise RuntimeError(NO_PROXIES)
 
 
-#: Google Cloud. Leave these empty on a laptop and nothing is uploaded; fill
-#: them in production and every successful run is archived and loaded.
 GCP_PROJECT = os.getenv("GCP_PROJECT", "").strip()
 GCS_BUCKET = os.getenv("GCS_BUCKET", "").strip()
 BQ_DATASET = os.getenv("BQ_DATASET", "").strip()
 
-#: Delete a local file once Cloud Storage confirms it holds a copy.
+# Delete a local file once Cloud Storage confirms it holds a copy.
 DELETE_LOCAL_AFTER_UPLOAD = os.getenv(
     "DELETE_LOCAL_AFTER_UPLOAD", "true").strip().lower() in {"1", "true", "yes"}
 

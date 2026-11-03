@@ -433,6 +433,10 @@ def main(argv=None) -> int:
             count = getattr(adapter, attribute, 0)
             if count:
                 print(f"  skipped           : {count} {label}")
+        log_path = paths.file("logs", ".log")
+        if log_path.exists():
+            written.append(log_path)
+
         manifest = build_manifest(
             run_id=run_id,
             adapter=adapter,
@@ -460,11 +464,15 @@ def main(argv=None) -> int:
         for path in written:
             print(f"      {path}")
 
+        logging.getLogger(__name__).info("run %s finished: %s", run_id, status)
+
+        # Closed before publishing so the log reaches the bucket complete.
+        close_run_log(log_handler)
+        log_handler = None
+
         for warning in publish(payload, manifest, written, paths.root.name, adapter):
             logging.getLogger(__name__).warning(warning)
             print(f"warning: {warning}", file=sys.stderr)
-
-        logging.getLogger(__name__).info("run %s finished: %s", run_id, status)
 
         return 0 if status == STATUS_OK else 1
     except Exception as exc:
@@ -474,6 +482,10 @@ def main(argv=None) -> int:
         if partial_writer:
             partial_writer.flush()
             saved = partial_writer.written
+        log_path = paths.file("logs", ".log")
+        crash_files = [str(p.relative_to(paths.root)) for p in (
+            [paths.file("partial", ".jsonl")] if saved else []) + (
+            [log_path] if log_path.exists() else [])]
         failed = build_manifest(
             run_id=run_id,
             adapter=adapter,
@@ -488,13 +500,18 @@ def main(argv=None) -> int:
             brands_empty=[],
             reason=f"{type(exc).__name__}: {exc}",
             warnings=prepare_warnings,
-            files=[str(paths.file("partial", ".jsonl").relative_to(paths.root))]
-                  if saved else [],
+            files=crash_files,
         )
         manifest_path = write_manifest(paths.file("manifest", ".json"), failed)
 
-        for warning in publish({}, failed, [manifest_path], paths.root.name):
+        # Closed before publishing so the log reaches the bucket complete.
+        close_run_log(log_handler)
+        log_handler = None
+
+        files = [manifest_path] + ([log_path] if log_path.exists() else [])
+        for warning in publish({}, failed, files, paths.root.name):
             logging.getLogger(__name__).warning(warning)
+            print(f"warning: {warning}", file=sys.stderr)
         return 2
     finally:
         close_run_log(log_handler)

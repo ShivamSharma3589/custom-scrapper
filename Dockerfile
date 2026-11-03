@@ -19,7 +19,8 @@ RUN pip install --upgrade pip && pip install -r requirements.txt
 # real browser; without this they fetch nothing.
 RUN scrapling install
 
-COPY . .
+# app/ becomes /app, so the code keeps the same layout it has on disk.
+COPY app/ /app/
 
 RUN mkdir -p /app/output
 CMD ["python", "/app/scrape_job.py"]

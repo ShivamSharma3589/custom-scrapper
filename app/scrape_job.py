@@ -1,17 +1,16 @@
-"""
-    The scheduled job. Edit the settings below, then run it.
-    Retailers run one after another. Every run appends a line per retailer to
-    output/scrape_job.log.
-"""
-
+import config
 import json
 import subprocess
 import sys
 from datetime import datetime
 from pathlib import Path
+from retailscraper.adapters.base import available_adapters
 
-# Uncomment the shops to scrape
-RETAILERS = [
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+
+
+# RETAILERS either comes from .env or falls back to this list.
+RETAILERS = config.RETAILERS or [
     "lookfantastic",
     # "johnlewis",
     # "boots",
@@ -67,7 +66,6 @@ def newest_manifest(retailer_folder: Path):
 
 def folder_for(retailer: str) -> Path:
     """Where this retailer writes, e.g. johnlewis -> output/john_lewis."""
-    sys.path.insert(0, str(HERE))
     from retailscraper.adapters.base import get_adapter
     from retailscraper.runs import retailer_folder_name
 
@@ -131,12 +129,25 @@ def scrape(retailer: str) -> dict:
 
 
 def main() -> int:
+    # Entered retailer in the RETAILERS environment variable or .env file should be validated against known adapters.
+    if not RETAILERS:
+        print("error: no retailers to scrape. Set RETAILERS in .env, "
+              "e.g. RETAILERS=johnlewis,boots.", file=sys.stderr)
+        return 2
+
+    known = set(available_adapters())
+    unknown = [r for r in RETAILERS if r not in known]
+    if unknown:
+        print(f"error: unknown retailer(s) {', '.join(unknown)}. "
+              f"Known: {', '.join(sorted(known))}.", file=sys.stderr)
+        return 2
+
     if not CAMPAIGNS_ONLY and not BRANDS:
         print("error: BRANDS is empty. Add brands, or set CAMPAIGNS_ONLY = True.",
               file=sys.stderr)
         return 2
 
-    log(f"--- start: {len(RETAILERS)} retailer(s), "
+    log(f"--- start: {', '.join(RETAILERS)}, "
         f"campaigns_only={CAMPAIGNS_ONLY} ---")
 
     products = campaigns = blocked = worked = 0

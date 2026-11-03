@@ -18,10 +18,11 @@ scrapling install               # downloads Chromium; Boots and John Lewis need 
 
 ## Configure
 
-Copy `.env.example` to `.env` and fill it in.
+Copy `.env.example` to `.env` at the repository root and fill it in.
 
 | Variable | Purpose |
 |---|---|
+| `RETAILERS` | Which retailers this instance scrapes, comma-separated: `RETAILERS=johnlewis,boots`. One per instance in production; several run one after another |
 | `WEBSHARE_USERNAME` / `WEBSHARE_PASSWORD` | Webshare proxy credentials |
 | `WEBSHARE_PROXIES` | `host:port` of each proxy, comma-separated |
 | `ALLOW_DIRECT` | `true` scrapes from this machine's own IP instead of a proxy |
@@ -37,10 +38,10 @@ the run refuses to start.
 One retailer, campaigns and the products on their offer pages:
 
 ```bash
-python run.py --retailer lookfantastic --campaigns-only --ignore-robots --brands Clinique MAC "Tom Ford" "Jo Malone" "Estee Lauder" "Bobbi Brown" "Too Faced"
+python app/run.py --retailer lookfantastic --campaigns-only --ignore-robots --brands Clinique MAC "Tom Ford" "Jo Malone" "Estee Lauder" "Bobbi Brown" "Too Faced"
 ```
 
-`python run.py --help` lists every flag. The ones that matter:
+`python app/run.py --help` lists every flag. The ones that matter:
 
 | Flag | Effect |
 |---|---|
@@ -52,9 +53,12 @@ python run.py --retailer lookfantastic --campaigns-only --ignore-robots --brands
 | `--cache-dir` | reuse responses between runs; use while changing extraction rules |
 | `--refusal-limit` | share of 403/429/503 above which the run is called failed (default 0.30) |
 
-`scrape_job.py` is the scheduled entry point: it holds the retailer list, the
-brand list and the flags, then shells out to `run.py` once per retailer and
-appends a line to `output/scrape_job.log`. This is what the container runs.
+`app/scrape_job.py` is the scheduled entry point: it takes the retailer list
+from `RETAILERS`, holds the brand list and the flags, then shells out to
+`run.py` once per retailer and appends a line to `app/output/scrape_job.log`.
+This is what the container runs, so three instances of one image each scrape a
+different retailer by setting `RETAILERS` differently. It refuses to start on an
+unknown retailer name rather than scraping nothing.
 
 Exit codes: `0` success, `1` the run finished but not cleanly, `2` bad
 arguments or configuration, `3` skipped because another run holds the lock.
@@ -62,7 +66,7 @@ arguments or configuration, `3` skipped because another run holds the lock.
 ## Output
 
 ```
-output/<retailer>/
+app/output/<retailer>/
   campaigns/<run_id>.json|csv              every campaign found on the site
   filtered_campaigns/
     campaigns/<run_id>.json|csv            only campaigns proven to carry our brands
@@ -98,32 +102,46 @@ A campaign's brands are stored as one comma-separated string in
 null `product_id`. Campaigns that disappear from the site are never deleted.
 Local files are removed only after the bucket confirms the upload.
 
+The run log is uploaded too, including when a run crashes — on Cloud Run the
+local disk is RAM and disappears with the container, so the bucket is the only
+place a post-mortem can read it from. The log handler is closed before the
+upload, so the file is complete.
+
 ## Layout
 
 ```
-run.py                      CLI: one retailer, one run
-scrape_job.py               scheduled entry point, loops over retailers
-config.py                   .env settings
-retailscraper/
-  spider.py                 the generic crawler
-  models.py                 Product, Campaign, RejectedRecord
-  output.py                 JSON/CSV serialisation and the filtered set
-  publish.py                Cloud Storage upload and BigQuery load
-  runs.py                   run ids, paths, locking, manifests
-  validation.py             brand and price checks
-  promotions.py             classifying promotional copy
-  normalize.py, matching.py, keywords.py
-  adapters/
-    base.py                 the contract every adapter implements
-    lookfantastic.py  johnlewis.py  boots.py
-    allbeauty.py  asos.py  marksandspencer.py  amazon.py  next.py
+README.md  Dockerfile  .dockerignore      repository root
+requirements.txt  .env.example  .env
+app/
+  run.py                    CLI: one retailer, one run
+  scrape_job.py             scheduled entry point, loops over retailers
+  config.py                 .env settings
+  output/                   where runs are written
+  retailscraper/
+    spider.py               the generic crawler
+    models.py               Product, Campaign, RejectedRecord
+    output.py               JSON/CSV serialisation and the filtered set
+    publish.py              Cloud Storage upload and BigQuery load
+    runs.py                 run ids, paths, locking, manifests
+    validation.py           brand and price checks
+    promotions.py           classifying promotional copy
+    normalize.py, matching.py, keywords.py
+    adapters/
+      base.py               the contract every adapter implements
+      lookfantastic.py  johnlewis.py  boots.py
+      allbeauty.py  asos.py  marksandspencer.py  amazon.py  next.py
 ```
 
 `lookfantastic`, `johnlewis` and `boots` are the three in active use.
 
+Everything the scraper runs lives in `app/`, which becomes `/app` in the image,
+so container paths match the repository. The build inputs — `Dockerfile` and
+`requirements.txt` — stay at the root, as does `.env`, which `config.py` reads
+one level up from itself.
+
 ## Adding a retailer
 
-Subclass `RetailerAdapter` in a new module under `retailscraper/adapters/`,
+Subclass `RetailerAdapter` in a new module under `app/retailscraper/adapters/`,
 `register()` it, and import it from `adapters/__init__.py`. `base.py` defines
 what to override; the defaults handle the common case.
 
@@ -137,8 +155,10 @@ retailer-agnostic.
 
 ```bash
 docker build -t retail-scraper .
-docker run --rm --env-file .env --shm-size 1g -v "$PWD/output:/app/output" retail-scraper
+docker run --rm --env-file .env --shm-size 1g -v "$PWD/app/output:/app/output" retail-scraper
 ```
 
-The image installs Chromium at build time and runs `scrape_job.py`. A browser
-needs more than Docker's default 64 MB of shared memory, hence `--shm-size`.
+The image copies `app/` to `/app`, installs Chromium at build time and runs
+`scrape_job.py`. A browser needs more than Docker's default 64 MB of shared
+memory, hence `--shm-size`. The `.env` file is never copied into the image —
+pass the environment in at run time.
