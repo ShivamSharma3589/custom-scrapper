@@ -107,11 +107,22 @@ local disk is RAM and disappears with the container, so the bucket is the only
 place a post-mortem can read it from. The log handler is closed before the
 upload, so the file is complete.
 
+## Infrastructure
+
+The Google Cloud resources are Terraform, under `terraform/`, one folder per
+environment (`terraform/dev/`). `tables.tf` is where the four BigQuery tables
+come from — which is why the scraper only loads into them and never creates
+them. A schema change belongs there, applied before the next run, not in
+`publish.py`. The project, bucket and dataset it creates must be the ones `.env`
+points at. `terraform/dev/readme.md` covers running it.
+
 ## Layout
 
 ```
 README.md  Dockerfile  .dockerignore      repository root
 requirements.txt  .env.example  .env
+terraform/dev/                            the BigQuery tables and the rest of
+                                          the Google Cloud resources
 app/
   run.py                    CLI: one retailer, one run
   scrape_job.py             scheduled entry point, loops over retailers
