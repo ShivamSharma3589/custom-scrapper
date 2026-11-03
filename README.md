@@ -22,7 +22,7 @@ Copy `.env.example` to `.env` at the repository root and fill it in.
 
 | Variable | Purpose |
 |---|---|
-| `RETAILERS` | Which retailers this instance scrapes, comma-separated: `RETAILERS=johnlewis,boots`. One per instance in production; several run one after another |
+| `RETAILERS` | **Required.** Which retailers this instance scrapes, comma-separated: `RETAILERS=johnlewis,boots`. One per instance in production; several run one after another |
 | `WEBSHARE_USERNAME` / `WEBSHARE_PASSWORD` | Webshare proxy credentials |
 | `WEBSHARE_PROXIES` | `host:port` of each proxy, comma-separated |
 | `ALLOW_DIRECT` | `true` scrapes from this machine's own IP instead of a proxy |
@@ -57,8 +57,9 @@ python app/run.py --retailer lookfantastic --campaigns-only --ignore-robots --br
 from `RETAILERS`, holds the brand list and the flags, then shells out to
 `run.py` once per retailer and appends a line to `app/output/scrape_job.log`.
 This is what the container runs, so three instances of one image each scrape a
-different retailer by setting `RETAILERS` differently. It refuses to start on an
-unknown retailer name rather than scraping nothing.
+different retailer by setting `RETAILERS` differently. It refuses to start if
+`RETAILERS` is missing, blank or names a retailer that has no adapter, rather
+than scraping the wrong thing or nothing.
 
 Exit codes: `0` success, `1` the run finished but not cleanly, `2` bad
 arguments or configuration, `3` skipped because another run holds the lock.

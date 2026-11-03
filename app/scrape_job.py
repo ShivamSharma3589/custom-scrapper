@@ -9,17 +9,7 @@ from retailscraper.adapters.base import available_adapters
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 
-# RETAILERS either comes from .env or falls back to this list.
-RETAILERS = config.RETAILERS or [
-    "lookfantastic",
-    # "johnlewis",
-    # "boots",
-    # "allbeauty",
-    # "marksandspencer",
-    # "asos",
-    # "next",
-    # "amazon",
-]
+RETAILERS = config.RETAILERS
 
 BRANDS = [
     "Clinique",
