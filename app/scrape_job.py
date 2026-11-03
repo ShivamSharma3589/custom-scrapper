@@ -1,12 +1,13 @@
-import config
 import json
 import subprocess
 import sys
 from datetime import datetime
 from pathlib import Path
-from retailscraper.adapters.base import available_adapters
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
+
+import config
+from retailscraper.adapters.base import available_adapters
 
 
 RETAILERS = config.RETAILERS
