@@ -112,7 +112,7 @@ def parse_args(argv=None) -> argparse.Namespace:
         default=None,
         help="A keyword file defining what counts as an offer. REPLACES the "
              "built-in retail rules rather than adding to them, so only your "
-             "keywords are matched. See keywords/black-friday.txt.",
+             "keywords are matched.",
     )
     parser.add_argument(
         "--campaigns-only",
