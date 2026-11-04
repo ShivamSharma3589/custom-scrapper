@@ -25,7 +25,7 @@ BRANDS = [
 # True = offers only, a minute or two. False = the full crawl, hours.
 CAMPAIGNS_ONLY = True
 
-OUTPUT_FORMATS = ["json", "csv"]
+OUTPUT_FORMATS = config.OUTPUT_FORMATS
 
 IGNORE_ROBOTS = True
 
@@ -131,6 +131,12 @@ def main() -> int:
     if unknown:
         print(f"error: unknown retailer(s) {', '.join(unknown)}. "
               f"Known: {', '.join(sorted(known))}.", file=sys.stderr)
+        return 2
+
+    bad = [f for f in OUTPUT_FORMATS if f not in ("json", "csv")]
+    if bad or not OUTPUT_FORMATS:
+        print(f"error: OUTPUT_FORMATS must be json, csv or both, not "
+              f"{', '.join(bad) or 'empty'}.", file=sys.stderr)
         return 2
 
     if not CAMPAIGNS_ONLY and not BRANDS:

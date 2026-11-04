@@ -23,6 +23,7 @@ Copy `.env.example` to `.env` at the repository root and fill it in.
 | Variable | Purpose |
 |---|---|
 | `RETAILERS` | **Required.** Which retailers this instance scrapes, comma-separated: `RETAILERS=johnlewis,boots`. One per instance in production; several run one after another |
+| `OUTPUT_FORMATS` | `csv`, `json`, or both comma-separated. Default `csv` |
 | `WEBSHARE_USERNAME` / `WEBSHARE_PASSWORD` | Webshare proxy credentials |
 | `WEBSHARE_PROXIES` | `host:port` of each proxy, comma-separated |
 | `ALLOW_DIRECT` | `true` scrapes from this machine's own IP instead of a proxy |
@@ -107,6 +108,15 @@ The run log is uploaded too, including when a run crashes — on Cloud Run the
 local disk is RAM and disappears with the container, so the bucket is the only
 place a post-mortem can read it from. The log handler is closed before the
 upload, so the file is complete.
+
+Cloud Storage and BigQuery are independent: BigQuery is loaded from memory, not
+from a staged file in the bucket, so either can fail without taking the other
+down. The rows are still written to the bucket as `bigquery/<run_id>.<table>.ndjson`,
+but only as an archive to replay a failed load from.
+
+Every upload and every BigQuery load is tried up to three times, waiting 2s then
+4s. This sits on top of the client libraries' own backoff, which does not cover
+`load_table_from_file` at all and never retries a 403.
 
 ## Infrastructure
 

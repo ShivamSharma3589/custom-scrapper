@@ -9,6 +9,9 @@ load_dotenv(Path(__file__).resolve().parent.parent / ".env")
 
 RETAILERS = [r.strip().casefold() for r in os.getenv("RETAILERS", "").split(",") if r.strip()]
 
+OUTPUT_FORMATS = [f.strip().casefold()
+                  for f in os.getenv("OUTPUT_FORMATS", "csv").split(",") if f.strip()]
+
 PROXY_USERNAME = os.getenv("WEBSHARE_USERNAME", "")
 PROXY_PASSWORD = os.getenv("WEBSHARE_PASSWORD", "")
 

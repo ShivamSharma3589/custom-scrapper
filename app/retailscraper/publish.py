@@ -6,10 +6,12 @@ part and its files are already safe, so an upload problem is logged and the
 run still counts as a success.
 """
 
+import io
 import json
 import logging
 import uuid
 from pathlib import Path
+from time import sleep
 from typing import Any, Dict, List, Optional, Sequence, Tuple
 
 from config import (
@@ -344,25 +346,49 @@ def _blob_name(path: Path, run_folder: str) -> str:
     return f"{run_folder}/{path.name}"
 
 
+RETRY_ATTEMPTS = 3
+RETRY_FIRST_DELAY = 2.0
+
+
+def _retry(what: str, call):
+    """Call it up to RETRY_ATTEMPTS times, doubling the wait in between."""
+    delay = RETRY_FIRST_DELAY
+    for attempt in range(1, RETRY_ATTEMPTS + 1):
+        try:
+            return call()
+        except Exception as exc:
+            if attempt == RETRY_ATTEMPTS:
+                raise
+            log.warning("%s failed on attempt %d of %d (%s); retrying in %.0fs",
+                        what, attempt, RETRY_ATTEMPTS, exc, delay)
+            sleep(delay)
+            delay *= 2
+
+
 def _upload(bucket, local: Path, blob_name: str) -> bool:
-    bucket.blob(blob_name).upload_from_filename(str(local))
+    _retry(f"uploading {local.name}",
+           lambda: bucket.blob(blob_name).upload_from_filename(str(local)))
     return bucket.blob(blob_name).exists()
 
 
-def _load(client, bucket_name: str, blob_name: str, table_id: str) -> int:
-    """Append the staged rows to the table. Returns how many were loaded."""
+def _load(client, body: str, table_id) -> int:
+    """Append the rows to the table. Returns how many were loaded."""
     from google.cloud import bigquery as bq
 
-    job = client.load_table_from_uri(
-        f"gs://{bucket_name}/{blob_name}",
-        table_id,
-        job_config=bq.LoadJobConfig(
-            source_format=bq.SourceFormat.NEWLINE_DELIMITED_JSON,
-            write_disposition=bq.WriteDisposition.WRITE_APPEND,
-        ),
-    )
-    job.result()
-    return job.output_rows or 0
+    def attempt():
+        # A fresh stream each time: a retry cannot read a consumed one.
+        job = client.load_table_from_file(
+            io.BytesIO(body.encode("utf-8")),
+            table_id,
+            job_config=bq.LoadJobConfig(
+                source_format=bq.SourceFormat.NEWLINE_DELIMITED_JSON,
+                write_disposition=bq.WriteDisposition.WRITE_APPEND,
+            ),
+        )
+        job.result()
+        return job.output_rows or 0
+
+    return _retry(f"loading {table_id}", attempt)
 
 
 #: What each upserted table matches on, and what a later run overwrites.
@@ -372,7 +398,7 @@ _UPSERT = {
 }
 
 
-def _merge(client, bucket_name: str, blob_name: str, name: str) -> int:
+def _merge(client, body: str, name: str) -> int:
     """Upsert one table's rows on its own key"""
     from google.cloud import bigquery as bq
 
@@ -380,16 +406,21 @@ def _merge(client, bucket_name: str, blob_name: str, name: str) -> int:
     table_id = _table_id(name)
     staging = _table_ref(f"{name}_staging_{uuid.uuid4().hex[:8]}")
     staging_id = f"{GCP_PROJECT}.{_dataset_name()}.{staging.table_id}"
-    load = client.load_table_from_uri(
-        f"gs://{bucket_name}/{blob_name}",
-        staging,
-        job_config=bq.LoadJobConfig(
-            source_format=bq.SourceFormat.NEWLINE_DELIMITED_JSON,
-            schema=_schemas()[name],
-            write_disposition=bq.WriteDisposition.WRITE_TRUNCATE,
-        ),
-    )
-    load.result()
+
+    def stage():
+        # A fresh stream each time: a retry cannot read a consumed one.
+        load = client.load_table_from_file(
+            io.BytesIO(body.encode("utf-8")),
+            staging,
+            job_config=bq.LoadJobConfig(
+                source_format=bq.SourceFormat.NEWLINE_DELIMITED_JSON,
+                schema=_schemas()[name],
+                write_disposition=bq.WriteDisposition.WRITE_TRUNCATE,
+            ),
+        )
+        load.result()
+
+    _retry(f"staging {name}", stage)
 
     seen_cols = ["first_seen", "last_seen"] if track_seen else []
     columns = [*keys, *fields, *seen_cols]
@@ -406,18 +437,23 @@ def _merge(client, bucket_name: str, blob_name: str, name: str) -> int:
         updates.append("last_seen = GREATEST(target.last_seen, source.last_seen)")
     values = ", ".join(f"source.{c}" for c in columns)
 
+    sql = (
+        f"MERGE `{table_id}` AS target "
+        f"USING (SELECT {key_list}, {picked} "
+        f"FROM `{staging_id}` WHERE {not_null} "
+        f"GROUP BY {key_list}) AS source "
+        f"ON {on} "
+        f"WHEN MATCHED THEN UPDATE SET {', '.join(updates)} "
+        f"WHEN NOT MATCHED THEN INSERT ({', '.join(columns)}) VALUES ({values})"
+    )
+
+    def merge():
+        job = client.query(sql)
+        job.result()
+        return job.num_dml_affected_rows or 0
+
     try:
-        merge = client.query(
-            f"MERGE `{table_id}` AS target "
-            f"USING (SELECT {key_list}, {picked} "
-            f"FROM `{staging_id}` WHERE {not_null} "
-            f"GROUP BY {key_list}) AS source "
-            f"ON {on} "
-            f"WHEN MATCHED THEN UPDATE SET {', '.join(updates)} "
-            f"WHEN NOT MATCHED THEN INSERT ({', '.join(columns)}) VALUES ({values})"
-        )
-        merge.result()
-        return merge.num_dml_affected_rows or 0
+        return _retry(f"merging {name}", merge)
     finally:
         client.delete_table(staging, not_found_ok=True)
 
@@ -464,14 +500,23 @@ def _publish(payload: Dict[str, Any], manifest: Dict[str, Any],
         return ["google-cloud-storage and google-cloud-bigquery are not installed, "
                 "so nothing was uploaded"]
 
+    # Storage and BigQuery stand on their own: either can fail without
+    # stopping the other.
+    bucket = client = None
     try:
         bucket = storage.Client(project=GCP_PROJECT).bucket(GCS_BUCKET)
+    except Exception as exc:
+        warnings.append(f"could not reach Cloud Storage ({exc}); "
+                        f"the files are still on disk")
+    try:
         client = bq.Client(project=GCP_PROJECT)
     except Exception as exc:
-        return [f"could not reach Google Cloud ({exc}); the files are still on disk"]
+        warnings.append(f"could not reach BigQuery ({exc})")
+    if bucket is None and client is None:
+        return warnings
 
     uploaded = []
-    for path in files:
+    for path in files if bucket is not None else ():
         path = Path(path)
         if not path.exists():
             continue
@@ -486,13 +531,13 @@ def _publish(payload: Dict[str, Any], manifest: Dict[str, Any],
 
     log.info("uploaded %d file(s) to gs://%s/%s/", len(uploaded), GCS_BUCKET, run_folder)
 
-    if _dataset_name() != BQ_DATASET.strip():
-        warnings.append(
-            f"BQ_DATASET is {BQ_DATASET!r}; reading it as dataset "
-            f"{_dataset_name()!r} in project {GCP_PROJECT!r}")
+    if client is not None:
+        if _dataset_name() != BQ_DATASET.strip():
+            warnings.append(
+                f"BQ_DATASET is {BQ_DATASET!r}; reading it as dataset "
+                f"{_dataset_name()!r} in project {GCP_PROJECT!r}")
+        log.info("BigQuery target: %s.%s", GCP_PROJECT, _dataset_name())
     tables = {name: _table_ref(name) for name in (RUNS, PRODUCTS, CAMPAIGNS, MAPPING)}
-    log.info("BigQuery target: %s.%s (%s)", GCP_PROJECT, _dataset_name(),
-             ", ".join(sorted(tables)))
 
     # A failed run still gets its runs row, so the morning check shows it.
     batches = {RUNS: [_run_row(manifest)]}
@@ -518,6 +563,21 @@ def _publish(payload: Dict[str, Any], manifest: Dict[str, Any],
         if not rows:
             continue
 
+        body = "\n".join(json.dumps(r, ensure_ascii=False, default=str) for r in rows)
+
+        # Archived whatever BigQuery does, so a failed load can be replayed.
+        if bucket is not None:
+            blob_name = f"{run_folder}/bigquery/{run_id}.{name}.ndjson"
+            try:
+                _retry(f"archiving the {name} rows",
+                       lambda: bucket.blob(blob_name).upload_from_string(
+                           body, content_type="application/json"))
+            except Exception as exc:
+                warnings.append(f"could not archive the {name} rows to the bucket ({exc})")
+
+        if client is None:
+            continue
+
         # Products and campaigns are upserted, so re-running is the point. The
         # tables that carry a run_id must not take the same run twice.
         if name in _APPEND_ONLY:
@@ -536,15 +596,12 @@ def _publish(payload: Dict[str, Any], manifest: Dict[str, Any],
             warnings.extend(drift)
             continue
 
-        blob_name = f"{run_folder}/bigquery/{run_id}.{name}.ndjson"
-        body = "\n".join(json.dumps(r, ensure_ascii=False, default=str) for r in rows)
         try:
-            bucket.blob(blob_name).upload_from_string(body, content_type="application/json")
             if name in _UPSERT:
-                loaded = _merge(client, GCS_BUCKET, blob_name, name)
+                loaded = _merge(client, body, name)
                 log.info("upserted %d row(s) into %s", loaded, name)
             else:
-                loaded = _load(client, GCS_BUCKET, blob_name, tables[name])
+                loaded = _load(client, body, tables[name])
                 log.info("loaded %d row(s) into %s", loaded, name)
         except Exception as exc:
             warnings.append(f"could not load {name} into BigQuery ({exc}); "
