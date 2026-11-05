@@ -12,7 +12,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 WORKDIR /app
 
 # Requirements first, so a code change does not reinstall everything.
-COPY requirements.txt .
+COPY app/requirements.txt .
 RUN pip install --upgrade pip && pip install -r requirements.txt
 
 # Downloads Chromium and its system libraries. Boots and John Lewis need a

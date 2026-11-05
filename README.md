@@ -12,7 +12,7 @@ Built on [Scrapling](https://github.com/D4Vinci/Scrapling) 0.4.15. Python 3.13.
 ```bash
 python -m venv .venv
 .venv/Scripts/activate          # Linux/macOS: source .venv/bin/activate
-pip install -r requirements.txt
+pip install -r app/requirements.txt
 scrapling install               # downloads Chromium; Boots and John Lewis need it
 ```
 
@@ -131,13 +131,14 @@ points at. `terraform/dev/readme.md` covers running it.
 
 ```
 README.md  Dockerfile  .dockerignore      repository root
-requirements.txt  .env.example  .env
+.env.example  .env
 terraform/dev/                            the BigQuery tables and the rest of
                                           the Google Cloud resources
 app/
   run.py                    CLI: one retailer, one run
   scrape_job.py             scheduled entry point, loops over retailers
   config.py                 .env settings
+  requirements.txt          Python dependencies
   output/                   where runs are written
   retailscraper/
     spider.py               the generic crawler
@@ -156,10 +157,14 @@ app/
 
 `lookfantastic`, `johnlewis` and `boots` are the three in active use.
 
-Everything the scraper runs lives in `app/`, which becomes `/app` in the image,
-so container paths match the repository. The build inputs — `Dockerfile` and
-`requirements.txt` — stay at the root, as does `.env`, which `config.py` reads
-one level up from itself.
+Everything the scraper needs lives in `app/`, which becomes `/app` in the image,
+so container paths match the repository. The `Dockerfile` stays at the root, as
+does `.env`, which `config.py` reads one level up from itself.
+
+The Dockerfile copies `app/requirements.txt` on its own before copying the rest
+of `app/`. That is deliberate: `pip install` is the slowest layer, and giving it
+its own layer means editing a `.py` file reuses the cached install instead of
+reinstalling every dependency on every build.
 
 ## Adding a retailer
 
