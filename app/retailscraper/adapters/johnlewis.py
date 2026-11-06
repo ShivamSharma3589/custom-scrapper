@@ -173,7 +173,6 @@ class JohnLewisAdapter(RetailerAdapter):
             return AsyncStealthySession(
                 headless=True,
                 google_search=True,
-                network_idle=True,
                 timeout=120_000,
                 max_pages=2,
                 proxy=proxy,

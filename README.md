@@ -25,6 +25,9 @@ Copy `.env.example` to `.env` at the repository root and fill it in.
 | `RETAILERS` | **Required.** Which retailers this instance scrapes, comma-separated: `RETAILERS=johnlewis,boots`. One per instance in production; several run one after another |
 | `OUTPUT_FORMATS` | `csv`, `json`, or both comma-separated. Default `csv` |
 | `WEBSHARE_USERNAME` / `WEBSHARE_PASSWORD` | Webshare proxy credentials |
+| `WEBSHARE_COUNTRY` | two-letter country for the exit IPs, e.g. `gb`. Blank means anywhere |
+| `WEBSHARE_SESSIONS` | how many exit IPs to hold at once (default 3) |
+| `WEBSHARE_ENDPOINT` | Webshare's backbone host (default `p.webshare.io:80`) |
 | `WEBSHARE_PROXIES` | `host:port` of each proxy, comma-separated |
 | `ALLOW_DIRECT` | `true` scrapes from this machine's own IP instead of a proxy |
 | `GCP_PROJECT`, `GCS_BUCKET`, `BQ_DATASET` | Fill all three to enable publishing; leave empty and nothing is uploaded |
@@ -33,6 +36,28 @@ Copy `.env.example` to `.env` at the repository root and fill it in.
 
 Every request goes through a proxy unless `ALLOW_DIRECT=true`; with neither set
 the run refuses to start.
+
+### How the proxies are built
+
+Webshare's backbone endpoint reads the exit IP out of the **username**:
+`<user>-<country>-<n>` pins session `n` to one IP. So `WEBSHARE_SESSIONS=3`
+with `WEBSHARE_COUNTRY=gb` produces three different UK exit IPs from one
+endpoint:
+
+```
+http://<user>-gb-1:<pass>@p.webshare.io:80
+http://<user>-gb-2:<pass>@p.webshare.io:80
+http://<user>-gb-3:<pass>@p.webshare.io:80
+```
+
+The crawl uses the first; when a site starts refusing it, the spider moves to
+the second, then the third. Rotating residential has no IP list to configure —
+this is the only way to use it. Pin the country: Webshare's own docs say
+choosing one in their web UI does nothing, the username is what sets it.
+
+`WEBSHARE_PROXIES` is the older style, an explicit `host:port` list. If it is
+filled in it **overrides** the endpoint above; leave it blank for rotating
+residential.
 
 ## Run
 

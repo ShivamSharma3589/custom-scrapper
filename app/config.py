@@ -2,6 +2,7 @@
 
 import os
 from pathlib import Path
+from urllib.parse import quote
 
 from dotenv import load_dotenv
 
@@ -17,15 +18,37 @@ PROXY_PASSWORD = os.getenv("WEBSHARE_PASSWORD", "")
 
 PROXY_ADDRESSES = [a.strip() for a in os.getenv("WEBSHARE_PROXIES", "").split(",") if a.strip()]
 
+PROXY_ENDPOINT = os.getenv("WEBSHARE_ENDPOINT", "").strip() or "p.webshare.io:80"
+PROXY_COUNTRY = os.getenv("WEBSHARE_COUNTRY", "").strip().lower()
+
+
+def _session_count() -> int:
+    try:
+        return max(int(os.getenv("WEBSHARE_SESSIONS", "").strip() or 3), 1)
+    except ValueError:
+        return 3
+
+
+def _backbone_urls():
+    """One URL per session. Webshare reads the exit IP from the username."""
+    if not (PROXY_USERNAME and PROXY_PASSWORD and PROXY_ENDPOINT):
+        return []
+    name = "-".join(p for p in (PROXY_USERNAME, PROXY_COUNTRY) if p)
+    return [f"http://{quote(f'{name}-{n}', safe='-')}:"
+            f"{quote(PROXY_PASSWORD, safe='')}@{PROXY_ENDPOINT}"
+            for n in range(1, _session_count() + 1)]
+
+
 PROXY_URLS = [
-    f"http://{PROXY_USERNAME}:{PROXY_PASSWORD}@{address}" if PROXY_USERNAME else f"http://{address}"
+    f"http://{quote(PROXY_USERNAME, safe='')}:{quote(PROXY_PASSWORD, safe='')}@{address}"
+    if PROXY_USERNAME else f"http://{address}"
     for address in PROXY_ADDRESSES
-]
+] or _backbone_urls()
 
 NO_PROXIES = (
     "no proxies configured. Every request must go through Webshare, never this "
-    "machine's own IP. Set WEBSHARE_USERNAME, WEBSHARE_PASSWORD and "
-    "WEBSHARE_PROXIES in .env -- see .env.example."
+    "machine's own IP. Set WEBSHARE_USERNAME and WEBSHARE_PASSWORD in .env "
+    "-- see .env.example."
 )
 
 
@@ -48,6 +71,10 @@ def first_proxy():
 GCP_PROJECT = os.getenv("GCP_PROJECT", "").strip()
 GCS_BUCKET = os.getenv("GCS_BUCKET", "").strip()
 BQ_DATASET = os.getenv("BQ_DATASET", "").strip()
+BQ_TABLE_RUNS = os.getenv("BQ_TABLE_RUNS", "").strip() or "runs"
+BQ_TABLE_PRODUCTS = os.getenv("BQ_TABLE_PRODUCTS", "").strip() or "products"
+BQ_TABLE_CAMPAIGNS = os.getenv("BQ_TABLE_CAMPAIGNS", "").strip() or "campaigns"
+BQ_TABLE_MAPPING = os.getenv("BQ_TABLE_MAPPING", "").strip() or "campaigns_products_mapping"
 
 # Delete a local file once Cloud Storage confirms it holds a copy.
 DELETE_LOCAL_AFTER_UPLOAD = os.getenv(

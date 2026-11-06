@@ -15,6 +15,10 @@ from time import sleep
 from typing import Any, Dict, List, Optional, Sequence, Tuple
 
 from config import (
+    BQ_TABLE_RUNS,
+    BQ_TABLE_PRODUCTS,
+    BQ_TABLE_CAMPAIGNS,
+    BQ_TABLE_MAPPING,
     BQ_DATASET,
     DELETE_LOCAL_AFTER_UPLOAD,
     GCP_PROJECT,
@@ -24,10 +28,10 @@ from config import (
 
 log = logging.getLogger(__name__)
 
-RUNS = "runs"
-PRODUCTS = "products"
-CAMPAIGNS = "campaigns"
-MAPPING = "campaigns_products_mapping"
+RUNS = BQ_TABLE_RUNS
+PRODUCTS = BQ_TABLE_PRODUCTS
+CAMPAIGNS = BQ_TABLE_CAMPAIGNS
+MAPPING = BQ_TABLE_MAPPING
 
 #: Tables carrying a run_id, so the same run must not be loaded twice.
 _APPEND_ONLY = (RUNS, MAPPING)
