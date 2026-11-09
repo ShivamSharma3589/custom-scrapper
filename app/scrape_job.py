@@ -83,8 +83,7 @@ def scrape(retailer: str) -> dict:
 
     started = datetime.now()
     try:
-        finished = subprocess.run(command, cwd=str(HERE), timeout=TIMEOUT_SECONDS,
-                                  capture_output=True, text=True, errors="replace")
+        finished = subprocess.run(command, cwd=str(HERE), timeout=TIMEOUT_SECONDS)
         exit_code = finished.returncode
     except subprocess.TimeoutExpired:
         exit_code = None

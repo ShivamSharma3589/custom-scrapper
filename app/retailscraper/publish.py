@@ -52,9 +52,8 @@ def _schemas():
             F("duration_seconds", "FLOAT64"),
             F("status", "STRING"),
             F("products", "INT64"),
-            F("expected_products", "INT64"),
             F("campaigns", "INT64"),
-            F("rejected", "INT64"),
+            F("requests_refused", "INT64"),
             F("requests_total", "INT64"),
         ],
         PRODUCTS: [
@@ -71,9 +70,6 @@ def _schemas():
             F("discount_amount", "NUMERIC"),
             F("discount_percent", "NUMERIC"),
             F("price_is_from", "BOOL"),
-            F("currency", "STRING"),
-            F("variant_count", "STRING"),
-            F("scraped_at", "TIMESTAMP", mode="REQUIRED"),
             F("product_offer", "STRING"),
         ],
         CAMPAIGNS: [
@@ -110,9 +106,6 @@ _PRODUCT_FIELDS = [
     "discount_amount",
     "discount_percent",
     "price_is_from",
-    "currency",
-    "variant_count",
-    "scraped_at",
     "product_offer",
 ]
 
@@ -132,7 +125,7 @@ _CAMPAIGN_FIELDS = [
 #: A row missing any of these would be rejected by a NOT NULL column.
 _REQUIRED = {
     RUNS: ["run_id", "retailer", "started_at"],
-    PRODUCTS: ["retailer", "product_id", "first_seen", "last_seen", "scraped_at"],
+    PRODUCTS: ["retailer", "product_id", "first_seen", "last_seen"],
     CAMPAIGNS: ["retailer", "brand", "campaign_id",
                 "promotion_text", "promotion_type"],
     MAPPING: ["run_id", "run_at", "campaign_id"],
@@ -144,15 +137,10 @@ def _money(value: Any) -> Optional[str]:
     return None if value is None else str(value)
 
 
-def _text(value: Any) -> Optional[str]:
-    """A STRING column, for a value the scrape may hold as a number."""
-    return None if value is None else str(value)
-
-
 def _run_row(manifest: Dict[str, Any]) -> Dict[str, Any]:
     keep = ("run_id", "retailer", "domain", "started_at", "finished_at",
-            "duration_seconds", "status", "products", "expected_products",
-            "campaigns", "rejected", "requests_total")
+            "duration_seconds", "status", "products",
+            "campaigns", "requests_refused", "requests_total")
     return {key: manifest.get(key) for key in keep}
 
 
@@ -175,9 +163,6 @@ def _product_rows(products, started_at, retailer) -> List[Dict[str, Any]]:
             "discount_amount": _money(p.get("discount_amount")),
             "discount_percent": _money(p.get("discount_percent")),
             "price_is_from": p.get("price_is_from"),
-            "currency": p.get("currency"),
-            "variant_count": _text(p.get("variant_count")),
-            "scraped_at": p.get("scraped_at") or started_at,
             "product_offer": (p.get("product_offer") or p.get("offer_text")
                               or p.get("promotional_copy")),
         })
