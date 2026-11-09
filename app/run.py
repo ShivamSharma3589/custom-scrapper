@@ -21,7 +21,7 @@ from retailscraper.validation import (
 )
 from retailscraper.promotions import set_offer_keywords
 from retailscraper.output import build_payload, write_all
-from retailscraper.publish import publish
+from retailscraper.publish import publish, publish_log
 from retailscraper.spider import RetailPromotionSpider
 from retailscraper.runs import (
     DEFAULT_REFUSAL_LIMIT,
@@ -466,12 +466,13 @@ def main(argv=None) -> int:
 
         logging.getLogger(__name__).info("run %s finished: %s", run_id, status)
 
-        # Closed before publishing so the log reaches the bucket complete.
-        close_run_log(log_handler)
-        log_handler = None
-
         for warning in publish(payload, manifest, written, paths.root.name, adapter):
             logging.getLogger(__name__).warning(warning)
+            print(f"warning: {warning}", file=sys.stderr)
+
+        close_run_log(log_handler)
+        log_handler = None
+        for warning in publish_log(log_path, paths.root.name):
             print(f"warning: {warning}", file=sys.stderr)
 
         return 0 if status == STATUS_OK else 1
@@ -504,13 +505,14 @@ def main(argv=None) -> int:
         )
         manifest_path = write_manifest(paths.file("manifest", ".json"), failed)
 
-        # Closed before publishing so the log reaches the bucket complete.
-        close_run_log(log_handler)
-        log_handler = None
-
         files = [manifest_path] + ([log_path] if log_path.exists() else [])
         for warning in publish({}, failed, files, paths.root.name):
             logging.getLogger(__name__).warning(warning)
+            print(f"warning: {warning}", file=sys.stderr)
+
+        close_run_log(log_handler)
+        log_handler = None
+        for warning in publish_log(log_path, paths.root.name):
             print(f"warning: {warning}", file=sys.stderr)
         return 2
     finally:

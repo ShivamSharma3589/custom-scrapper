@@ -13,6 +13,7 @@ import uuid
 from pathlib import Path
 from time import sleep
 from typing import Any, Dict, List, Optional, Sequence, Tuple
+from google.cloud import storage
 
 from config import (
     BQ_TABLE_RUNS,
@@ -463,6 +464,23 @@ def publish(payload: Dict[str, Any], manifest: Dict[str, Any],
         return [f"publishing to Google Cloud failed ({exc}); the files are still on disk"]
 
 
+def publish_log(path: Path, run_folder: str) -> List[str]:
+    """Re-upload the run log once publishing is finished, so the copy in the
+    bucket includes the uploads and the BigQuery loads. Never raises."""
+    path = Path(path)
+    if not publishing_enabled() or not path.exists():
+        return []
+    try:
+        bucket = storage.Client(project=GCP_PROJECT).bucket(GCS_BUCKET)
+        if not _upload(bucket, path, _blob_name(path, run_folder)):
+            return [f"the run log did not arrive in the bucket"]
+        if DELETE_LOCAL_AFTER_UPLOAD:
+            path.unlink()
+        return []
+    except Exception as exc:
+        return [f"could not upload the run log ({exc}); it is still on disk"]
+
+
 def _client_facing(payload: Dict[str, Any], adapter) -> Tuple[List[Dict], List[Dict]]:
     """The campaigns and products as written to `filtered_campaigns/`."""
     from .output import build_filtered
@@ -484,7 +502,6 @@ def _publish(payload: Dict[str, Any], manifest: Dict[str, Any],
 
     try:
         from google.cloud import bigquery as bq
-        from google.cloud import storage
     except ImportError:
         return ["google-cloud-storage and google-cloud-bigquery are not installed, "
                 "so nothing was uploaded"]
@@ -604,7 +621,8 @@ def _publish(payload: Dict[str, Any], manifest: Dict[str, Any],
         removed = 0
         for path, _ in uploaded:
             # The manifest stays: scrape_job.py reads it after the run exits.
-            if path.parent.name == "manifest":
+            # The log stays too: publish_log() re-uploads and removes it.
+            if path.parent.name in ("manifest", "logs"):
                 continue
             try:
                 path.unlink()
