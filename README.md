@@ -27,7 +27,7 @@ Copy `.env.example` to `.env` at the repository root and fill it in.
 | `WEBSHARE_USERNAME` / `WEBSHARE_PASSWORD` | Webshare proxy credentials |
 | `WEBSHARE_COUNTRY` | two-letter country for the exit IPs, e.g. `gb`. Blank means anywhere |
 | `WEBSHARE_SESSIONS` | how many exit IPs to hold at once (default 3) |
-| `WEBSHARE_ENDPOINT` | Webshare's backbone host (default `p.webshare.io:80`) |
+| `WEBSHARE_HOST` & `WEBSHARE_PORT` | Webshare's backbone host (default `p.webshare.io:80`) |
 | `WEBSHARE_PROXIES` | `host:port` of each proxy, comma-separated |
 | `ALLOW_DIRECT` | `true` scrapes from this machine's own IP instead of a proxy |
 | `GCP_PROJECT`, `GCS_BUCKET`, `BQ_DATASET` | Fill all three to enable publishing; leave empty and nothing is uploaded |

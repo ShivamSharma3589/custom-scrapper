@@ -375,10 +375,6 @@ class RetailPromotionSpider(SitemapSpider):
         self.blocked_by_brand[brand] = self.blocked_by_brand.get(brand, 0) + 1
         self._refused_in_a_row += 1
 
-        if is_transport_failure(error):
-            self._refused_in_a_row = max(self._refused_in_a_row,
-                                         self.SWITCH_AFTER_REFUSALS)
-
         switches_before = len(self.switched_sessions)
         if not await self._switch_to_backup(f"could not fetch: {_first_line(error)}"):
             self._abandon(request, f"no proxy left that could fetch it: {_first_line(error)}")

@@ -18,7 +18,7 @@ PROXY_PASSWORD = os.getenv("WEBSHARE_PASSWORD", "")
 
 PROXY_ADDRESSES = [a.strip() for a in os.getenv("WEBSHARE_PROXIES", "").split(",") if a.strip()]
 
-PROXY_ENDPOINT = os.getenv("WEBSHARE_ENDPOINT", "").strip() or "p.webshare.io:80"
+PROXY_ENDPOINT = f"{os.getenv('WEBSHARE_HOST', '').strip()}:{os.getenv('WEBSHARE_PORT', '').strip()}"
 PROXY_COUNTRY = os.getenv("WEBSHARE_COUNTRY", "").strip().lower()
 
 
