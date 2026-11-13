@@ -3,6 +3,7 @@
 import json
 import re
 from datetime import datetime, timezone
+from itertools import cycle
 from pathlib import Path
 from typing import Any, Dict, Iterable, List, Optional, Sequence
 from urllib.parse import parse_qs, quote_plus, urlparse
@@ -515,21 +516,35 @@ class BootsAdapter(RetailerAdapter):
             "criteria.promotionalText")
         return values[0] if values else None
 
+    #: Never below 1600 wide: narrower and Boots hides the filter panel,
+    #: including the Promotions facet, behind a burger menu.
+    _VIEWPORTS = ((1600, 1000), (1680, 1050), (1792, 1120), (1920, 1080))
+
     def configure_session(self, manager) -> None:
         """Use a stealth browser session, kept alive across the whole crawl."""
         from scrapling.fetchers import AsyncStealthySession
 
-        self.add_proxied_sessions(manager, lambda proxy: AsyncStealthySession(
-            headless=True,
-            google_search=True,
-            network_idle=True,
-            timeout=20_000,
-            max_pages=2,
-            proxy=proxy,
-            # Narrower than this and Boots hides the filter panel, including the
-            # Promotions facet, behind a burger menu.
-            additional_args={"viewport": {"width": 1600, "height": 1000}},
-        ))
+        sizes = cycle(self._VIEWPORTS)
+
+        def build(proxy):
+            width, height = next(sizes)
+            return AsyncStealthySession(
+                headless=True,
+                google_search=True,
+                network_idle=True,
+                timeout=20_000,
+                max_pages=2,
+                proxy=proxy,
+                # The exits are British homes; left to default, every session
+                # announces this machine's Indian locale and timezone instead.
+                locale="en-GB",
+                timezone_id="Europe/London",
+                hide_canvas=True,
+                block_webrtc=True,
+                additional_args={"viewport": {"width": width, "height": height}},
+            )
+
+        self.add_proxied_sessions(manager, build)
 
     @staticmethod
     def _brand_slug(brand: str) -> str:

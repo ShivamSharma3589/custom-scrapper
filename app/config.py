@@ -22,28 +22,23 @@ PROXY_ENDPOINT = f"{os.getenv('WEBSHARE_HOST', '').strip()}:{os.getenv('WEBSHARE
 PROXY_COUNTRY = os.getenv("WEBSHARE_COUNTRY", "").strip().lower()
 
 
-def _session_count() -> int:
-    try:
-        return max(int(os.getenv("WEBSHARE_SESSIONS", "").strip() or 3), 1)
-    except ValueError:
-        return 3
-
-
-def _backbone_urls():
-    """One URL per session. Webshare reads the exit IP from the username."""
-    if not (PROXY_USERNAME and PROXY_PASSWORD and PROXY_ENDPOINT):
-        return []
+def backbone_url(session: int) -> str:
+    """The proxy URL for one Webshare session. The exit IP is read from the
+    username, so session 7 is a different British home from session 6."""
     name = "-".join(p for p in (PROXY_USERNAME, PROXY_COUNTRY) if p)
-    return [f"http://{quote(f'{name}-{n}', safe='-')}:"
-            f"{quote(PROXY_PASSWORD, safe='')}@{PROXY_ENDPOINT}"
-            for n in range(1, _session_count() + 1)]
+    return (f"http://{quote(f'{name}-{session}', safe='-')}:"
+            f"{quote(PROXY_PASSWORD, safe='')}@{PROXY_ENDPOINT}")
 
+
+#: True when sessions are minted on demand instead of listed in WEBSHARE_PROXIES.
+BACKBONE = bool(PROXY_USERNAME and PROXY_PASSWORD and PROXY_ENDPOINT
+                and not PROXY_ADDRESSES)
 
 PROXY_URLS = [
     f"http://{quote(PROXY_USERNAME, safe='')}:{quote(PROXY_PASSWORD, safe='')}@{address}"
     if PROXY_USERNAME else f"http://{address}"
     for address in PROXY_ADDRESSES
-] or _backbone_urls()
+] or ([backbone_url(1)] if BACKBONE else [])
 
 NO_PROXIES = (
     "no proxies configured. Every request must go through Webshare, never this "
@@ -57,6 +52,7 @@ ALLOW_DIRECT = os.getenv("ALLOW_DIRECT", "").strip().lower() in {"1", "true", "y
 
 if ALLOW_DIRECT:
     PROXY_URLS = []
+    BACKBONE = False
 
 
 def first_proxy():

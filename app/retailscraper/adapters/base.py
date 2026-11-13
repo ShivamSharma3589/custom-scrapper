@@ -5,7 +5,7 @@ from abc import ABC, abstractmethod
 from dataclasses import dataclass
 from typing import Dict, Iterable, List, Optional, Sequence, TYPE_CHECKING
 
-from config import ALLOW_DIRECT, NO_PROXIES, PROXY_URLS
+from config import ALLOW_DIRECT, BACKBONE, NO_PROXIES, PROXY_URLS, backbone_url
 from ..models import Campaign, Product
 
 
@@ -93,6 +93,10 @@ class RetailerAdapter(ABC):
 
     backup_session_ids: Sequence[str] = ()
 
+    #: Set by add_proxied_sessions, so mint_session can build more of the same.
+    _build_session = None
+    _sessions_used = 0
+
     def extract_product_links(self, response, brand: Optional[str] = None) -> List[str]:
         """Product URLs found on a listing page."""
         return []
@@ -104,10 +108,11 @@ class RetailerAdapter(ABC):
         self.add_proxied_sessions(manager, lambda proxy: FetcherSession(proxy=proxy))
 
     def add_proxied_sessions(self, manager, build) -> None:
-        """One session per Webshare proxy: the first fetches, the rest are spares.
+        """One session to fetch with, and a way to get the next one.
 
         Nothing is ever fetched from this machine's own IP. When a proxy starts
-        refusing, the spider swaps in the next one.
+        refusing, the spider asks for the next one: a spare from
+        WEBSHARE_PROXIES, or a freshly minted Webshare session.
         """
         if not PROXY_URLS:
             if not ALLOW_DIRECT:
@@ -122,6 +127,19 @@ class RetailerAdapter(ABC):
             sid = f"proxy{number}"
             manager.add(sid, build(proxy), lazy=True)
             self.backup_session_ids.append(sid)
+        self._build_session = build
+        self._sessions_used = len(PROXY_URLS)
+
+    def mint_session(self):
+        """The next Webshare session, built only when the crawl needs it.
+
+        Returns (None, None) when the proxies are a fixed list, which runs out.
+        """
+        if not BACKBONE or self._build_session is None:
+            return None, None
+        self._sessions_used += 1
+        return (f"proxy{self._sessions_used}",
+                self._build_session(backbone_url(self._sessions_used)))
 
     def known_categories(self) -> List[str]:
         """Category names this adapter can look products up by."""

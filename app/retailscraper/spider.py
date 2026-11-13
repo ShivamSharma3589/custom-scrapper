@@ -65,6 +65,9 @@ class RetailPromotionSpider(SitemapSpider):
 
     SWITCH_AFTER_REFUSALS = 3
 
+    #: How many spare proxies to try before declaring them exhausted.
+    SWITCH_ATTEMPTS = 5
+
     def __init__(
         self,
         adapter: RetailerAdapter,
@@ -337,12 +340,21 @@ class RetailPromotionSpider(SitemapSpider):
                 return True
             return await self._take_next_session(why)
 
+    def _next_backup(self, manager):
+        """A spare from the configured list, or a brand new Webshare session."""
+        for sid in self.adapter.backup_session_ids:
+            if sid in manager.session_ids:
+                return sid, manager.pop(sid)
+        return self.adapter.mint_session()
+
     async def _take_next_session(self, why: str) -> bool:
         manager = self._session_manager
         current = manager.default_session_id
 
-        for backup_id in [sid for sid in self.adapter.backup_session_ids if sid in manager.session_ids]:
-            backup = manager.pop(backup_id)
+        for _ in range(self.SWITCH_ATTEMPTS):
+            backup_id, backup = self._next_backup(manager)
+            if backup is None:
+                return False
             try:
                 await backup.__aenter__()
             except Exception as exc:

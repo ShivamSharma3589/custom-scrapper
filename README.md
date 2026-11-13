@@ -26,7 +26,6 @@ Copy `.env.example` to `.env` at the repository root and fill it in.
 | `OUTPUT_FORMATS` | `csv`, `json`, or both comma-separated. Default `csv` |
 | `WEBSHARE_USERNAME` / `WEBSHARE_PASSWORD` | Webshare proxy credentials |
 | `WEBSHARE_COUNTRY` | two-letter country for the exit IPs, e.g. `gb`. Blank means anywhere |
-| `WEBSHARE_SESSIONS` | how many exit IPs to hold at once (default 3) |
 | `WEBSHARE_HOST` & `WEBSHARE_PORT` | Webshare's backbone host (default `p.webshare.io:80`) |
 | `WEBSHARE_PROXIES` | `host:port` of each proxy, comma-separated |
 | `ALLOW_DIRECT` | `true` scrapes from this machine's own IP instead of a proxy |
@@ -40,9 +39,9 @@ the run refuses to start.
 ### How the proxies are built
 
 Webshare's backbone endpoint reads the exit IP out of the **username**:
-`<user>-<country>-<n>` pins session `n` to one IP. So `WEBSHARE_SESSIONS=3`
-with `WEBSHARE_COUNTRY=gb` produces three different UK exit IPs from one
-endpoint:
+`<user>-<country>-<n>` pins session `n` to one IP. Session 1 does the
+fetching; when it starts being refused the crawl asks for the next number,
+so there is no list and no limit:
 
 ```
 http://<user>-gb-1:<pass>@p.webshare.io:80

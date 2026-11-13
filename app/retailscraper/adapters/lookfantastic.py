@@ -133,8 +133,11 @@ class LookfantasticAdapter(RetailerAdapter):
         self.add_proxied_sessions(manager, lambda proxy: FetcherSession(proxy=proxy))
         manager.add(
             self.listing_session_id,
+            # The exit is a British home; left to default, the browser
+            # announces this machine's Indian locale and timezone instead.
             AsyncDynamicSession(headless=True, network_idle=True, timeout=90_000,
-                                proxy=first_proxy()),
+                                proxy=first_proxy(), locale="en-GB",
+                                timezone_id="Europe/London"),
             lazy=True,
         )
 

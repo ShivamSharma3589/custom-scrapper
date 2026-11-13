@@ -178,6 +178,10 @@ class JohnLewisAdapter(RetailerAdapter):
                 proxy=proxy,
                 disable_resources=True,
                 extra_flags=["--disable-http2"],
+                # The exits are British homes; left to default, every session
+                # announces this machine's Indian locale and timezone instead.
+                locale="en-GB",
+                timezone_id="Europe/London",
             )
 
         self.add_proxied_sessions(manager, browser)
