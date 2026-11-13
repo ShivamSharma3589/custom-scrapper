@@ -93,7 +93,7 @@ class RetailerAdapter(ABC):
 
     backup_session_ids: Sequence[str] = ()
 
-    #: Set by add_proxied_sessions, so mint_session can build more of the same.
+    # Set by add_proxied_sessions, so mint_session can build more of the same.
     _build_session = None
     _sessions_used = 0
 

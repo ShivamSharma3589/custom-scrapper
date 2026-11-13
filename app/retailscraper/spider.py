@@ -65,7 +65,8 @@ class RetailPromotionSpider(SitemapSpider):
 
     SWITCH_AFTER_REFUSALS = 3
 
-    #: How many spare proxies to try before declaring them exhausted.
+    #: How many proxies that will not start to tolerate, on top of every
+    #: spare in the configured list, before declaring them exhausted.
     SWITCH_ATTEMPTS = 5
 
     def __init__(
@@ -351,7 +352,7 @@ class RetailPromotionSpider(SitemapSpider):
         manager = self._session_manager
         current = manager.default_session_id
 
-        for _ in range(self.SWITCH_ATTEMPTS):
+        for _ in range(len(self.adapter.backup_session_ids) + self.SWITCH_ATTEMPTS):
             backup_id, backup = self._next_backup(manager)
             if backup is None:
                 return False
