@@ -6,7 +6,7 @@ from datetime import datetime, timezone
 from typing import Any, Dict, Iterable, List, Optional, Sequence
 from urllib.parse import parse_qs, quote, quote_plus, urlparse
 
-from config import first_proxy
+from config import BROWSER_LOCALE, BROWSER_TIMEZONE, first_proxy
 from ..models import (
     SCOPE_BRAND,
     SCOPE_CATEGORY,
@@ -133,11 +133,9 @@ class LookfantasticAdapter(RetailerAdapter):
         self.add_proxied_sessions(manager, lambda proxy: FetcherSession(proxy=proxy))
         manager.add(
             self.listing_session_id,
-            # The exit is a British home; left to default, the browser
-            # announces this machine's Indian locale and timezone instead.
             AsyncDynamicSession(headless=True, network_idle=True, timeout=90_000,
-                                proxy=first_proxy(), locale="en-GB",
-                                timezone_id="Europe/London"),
+                                proxy=first_proxy(), locale=BROWSER_LOCALE,
+                                timezone_id=BROWSER_TIMEZONE),
             lazy=True,
         )
 

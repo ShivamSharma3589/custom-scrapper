@@ -21,6 +21,10 @@ PROXY_ADDRESSES = [a.strip() for a in os.getenv("WEBSHARE_PROXIES", "").split(",
 PROXY_ENDPOINT = f"{os.getenv('WEBSHARE_HOST', '').strip()}:{os.getenv('WEBSHARE_PORT', '').strip()}"
 PROXY_COUNTRY = os.getenv("WEBSHARE_COUNTRY", "").strip().lower()
 
+# Browser settings for locale and timezone.
+BROWSER_LOCALE = os.getenv("BROWSER_LOCALE", "").strip() or "en-GB"
+BROWSER_TIMEZONE = os.getenv("BROWSER_TIMEZONE", "").strip() or "Europe/London"
+
 
 def backbone_url(session: int) -> str:
     """The proxy URL for one Webshare session. The exit IP is read from the

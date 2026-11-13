@@ -26,7 +26,7 @@ from ..normalize import (
 )
 from ..promotions import classify_promotion, looks_like_offer
 from .base import ListingPage, RetailerAdapter, register
-from config import first_proxy
+from config import BROWSER_LOCALE, BROWSER_TIMEZONE, first_proxy
 
 _PRODUCT_URL_RE = re.compile(r"^https?://(?:www\.)?boots\.com/[a-z0-9][^/?#]*?-(\d{6,})/?$", re.I)
 
@@ -535,10 +535,8 @@ class BootsAdapter(RetailerAdapter):
                 timeout=20_000,
                 max_pages=2,
                 proxy=proxy,
-                # The exits are British homes; left to default, every session
-                # announces this machine's Indian locale and timezone instead.
-                locale="en-GB",
-                timezone_id="Europe/London",
+                locale=BROWSER_LOCALE,
+                timezone_id=BROWSER_TIMEZONE,
                 hide_canvas=True,
                 block_webrtc=True,
                 additional_args={"viewport": {"width": width, "height": height}},

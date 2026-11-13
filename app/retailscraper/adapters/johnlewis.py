@@ -32,7 +32,7 @@ from ..promotions import (
 )
 from ..validation import match_brand
 from .base import ListingPage, RetailerAdapter, register
-from config import first_proxy
+from config import BROWSER_LOCALE, BROWSER_TIMEZONE, first_proxy
 
 _PRODUCT_URL_RE = re.compile(
     r"^https?://(?:www\.)?johnlewis\.com/(?:[a-z0-9-]+/)+p(\d+)/?$", re.I
@@ -178,10 +178,8 @@ class JohnLewisAdapter(RetailerAdapter):
                 proxy=proxy,
                 disable_resources=True,
                 extra_flags=["--disable-http2"],
-                # The exits are British homes; left to default, every session
-                # announces this machine's Indian locale and timezone instead.
-                locale="en-GB",
-                timezone_id="Europe/London",
+                locale=BROWSER_LOCALE,
+                timezone_id=BROWSER_TIMEZONE,
             )
 
         self.add_proxied_sessions(manager, browser)

@@ -28,6 +28,7 @@ Copy `.env.example` to `.env` at the repository root and fill it in.
 | `WEBSHARE_COUNTRY` | two-letter country for the exit IPs, e.g. `gb`. Blank means anywhere |
 | `WEBSHARE_HOST` & `WEBSHARE_PORT`  | Webshare's backbone host (default `p.webshare.io:80`) |
 | `WEBSHARE_PROXIES` | `host:port` of each proxy, comma-separated |
+| `BROWSER_LOCALE` / `BROWSER_TIMEZONE` | what the browser reports, e.g. `en-GB` and `Europe/London`. Match them to `WEBSHARE_COUNTRY`: left unset the browser announces the machine's own country, which contradicts the proxy's exit IP |
 | `ALLOW_DIRECT` | `true` scrapes from this machine's own IP instead of a proxy |
 | `GCP_PROJECT`, `GCS_BUCKET`, `BQ_DATASET` | Fill all three to enable publishing; leave empty and nothing is uploaded |
 | `GOOGLE_APPLICATION_CREDENTIALS` | Service-account key with Storage + BigQuery access |
